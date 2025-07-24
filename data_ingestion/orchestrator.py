@@ -16,7 +16,8 @@ from .models import StockData, Symbol, DataSource, DataCollectionJob, DataQualit
 from .scrapers.yahoo_finance_scraper import YahooFinanceScraper
 from .utils.rate_limiter import RateLimiter
 from .utils.data_validator import DataValidator
-from .utils.error_handler import ErrorHandler
+from .utils.error_handler import ErrorHandler, global_error_handler
+from .utils.error_monitoring import start_error_monitoring, get_monitoring_summary
 from config.settings import DatabaseSettings, DataCollectionSettings
 
 logger = logging.getLogger(__name__)
@@ -41,7 +42,7 @@ class DataIngestionOrchestrator:
         # Initialize utilities
         self.rate_limiter = RateLimiter()
         self.data_validator = DataValidator()
-        self.error_handler = ErrorHandler()
+        self.error_handler = global_error_handler  # Use global error handler
         
         # Initialize scrapers
         self.scrapers: Dict[str, Any] = {}
@@ -50,6 +51,9 @@ class DataIngestionOrchestrator:
         # Collection state
         self.is_running = False
         self.current_jobs: Dict[str, DataCollectionJob] = {}
+        
+        # Error monitoring
+        self.monitoring_active = False
         
     def _initialize_scrapers(self):
         """Initialize all available data scrapers."""
@@ -98,6 +102,12 @@ class DataIngestionOrchestrator:
             timeframes = ['1d']  # Default to daily data
         
         self.is_running = True
+        
+        # Start error monitoring
+        if not self.monitoring_active:
+            await start_error_monitoring()
+            self.monitoring_active = True
+            logger.info("Error monitoring started")
         logger.info(f"Starting data collection for {len(symbols)} symbols across {len(timeframes)} timeframes")
         
         try:
@@ -168,6 +178,8 @@ class DataIngestionOrchestrator:
                 except Exception as e:
                     logger.error(f"Failed to collect from {source_name} for {job.symbol}: {e}")
                     self._log_data_quality_issue(job, source_name, str(e))
+                    # Record error in global error handler
+                    await self.error_handler._handle_final_failure(e, f"collect_from_{source_name}", (job, scraper, source_name, collection_params), {})
             
             # Mark job as completed
             job.status = "completed"
@@ -194,6 +206,9 @@ class DataIngestionOrchestrator:
                 session.commit()
             finally:
                 session.close()
+            
+            # Record error in global error handler
+            await self.error_handler._handle_final_failure(e, "collect_data_for_job", (job,), {})
     
     async def _collect_from_source(self, job: DataCollectionJob, scraper, source_name: str, params: Dict[str, Any]):
         """
@@ -387,6 +402,11 @@ class DataIngestionOrchestrator:
                     'error_message': job.error_message
                 }
                 for job_id, job in self.current_jobs.items()
+            },
+            'error_monitoring': {
+                'active': self.monitoring_active,
+                'error_summary': self.error_handler.get_error_summary(),
+                'monitoring_summary': get_monitoring_summary()
             }
         }
     

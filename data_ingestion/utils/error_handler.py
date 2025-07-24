@@ -3,464 +3,390 @@ Error handler utility for comprehensive error handling and retry mechanisms.
 """
 
 import asyncio
-import logging
-import time
 import random
-from typing import Dict, Any, Optional, Callable, List
-from datetime import datetime, timedelta
+import logging
+import json
+from typing import Optional, Callable, Dict, Any, List
 from enum import Enum
 from functools import wraps
+from datetime import datetime, timedelta
+from dataclasses import dataclass, asdict
+import traceback
+import structlog
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
+class CircuitBreakerState(Enum):
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
 
 class ErrorSeverity(Enum):
-    """Error severity levels."""
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
 
-
-class ErrorType(Enum):
-    """Error types for categorization."""
-    NETWORK = "network"
-    TIMEOUT = "timeout"
-    RATE_LIMIT = "rate_limit"
-    AUTHENTICATION = "authentication"
-    AUTHORIZATION = "authorization"
-    VALIDATION = "validation"
-    DATABASE = "database"
-    PARSING = "parsing"
-    UNKNOWN = "unknown"
-
-
-class CircuitBreakerState(Enum):
-    """Circuit breaker states."""
-    CLOSED = "closed"      # Normal operation
-    OPEN = "open"          # Failing, reject requests
-    HALF_OPEN = "half_open"  # Testing if service recovered
-
+@dataclass
+class ErrorEvent:
+    timestamp: datetime
+    error_type: str
+    error_message: str
+    severity: ErrorSeverity
+    source: str
+    context: Dict[str, Any]
+    stack_trace: Optional[str] = None
+    retry_count: int = 0
+    resolved: bool = False
 
 class ErrorHandler:
-    """
-    Comprehensive error handler with retry mechanisms and circuit breaker pattern.
-    """
-    
-    def __init__(
-        self,
-        max_retries: int = 3,
-        base_delay: float = 1.0,
-        max_delay: float = 60.0,
-        exponential_base: float = 2.0,
-        jitter: bool = True,
-        circuit_breaker_threshold: int = 5,
-        circuit_breaker_timeout: float = 60.0
-    ):
-        """
-        Initialize the error handler.
-        
-        Args:
-            max_retries: Maximum number of retry attempts
-            base_delay: Base delay between retries in seconds
-            max_delay: Maximum delay between retries in seconds
-            exponential_base: Base for exponential backoff
-            jitter: Whether to add random jitter to delays
-            circuit_breaker_threshold: Number of failures before opening circuit
-            circuit_breaker_timeout: Time to wait before half-opening circuit
-        """
+    def __init__(self, 
+                 max_retries: int = 3, 
+                 base_delay: float = 1.0, 
+                 circuit_breaker_threshold: int = 5, 
+                 circuit_breaker_timeout: float = 60.0,
+                 enable_alerting: bool = True):
         self.max_retries = max_retries
         self.base_delay = base_delay
-        self.max_delay = max_delay
-        self.exponential_base = exponential_base
-        self.jitter = jitter
         self.circuit_breaker_threshold = circuit_breaker_threshold
         self.circuit_breaker_timeout = circuit_breaker_timeout
+        self.enable_alerting = enable_alerting
         
         # Circuit breaker state
-        self.circuit_breaker_state = CircuitBreakerState.CLOSED
         self.failure_count = 0
         self.last_failure_time = None
-        self.success_count = 0
+        self.circuit_breaker_state = CircuitBreakerState.CLOSED
         
         # Error tracking
-        self.error_history = []
-        self.error_counts = {}
+        self.error_events: List[ErrorEvent] = []
+        self.error_stats: Dict[str, int] = {}
         
-        # Statistics
-        self.total_requests = 0
-        self.successful_requests = 0
-        self.failed_requests = 0
-        self.retried_requests = 0
-    
-    def retry_with_backoff(
-        self,
-        retry_exceptions: tuple = (Exception,),
-        max_retries: Optional[int] = None,
-        base_delay: Optional[float] = None
-    ):
+        # Alert thresholds
+        self.alert_thresholds = {
+            ErrorSeverity.LOW: 10,
+            ErrorSeverity.MEDIUM: 5,
+            ErrorSeverity.HIGH: 3,
+            ErrorSeverity.CRITICAL: 1
+        }
+
+    def retry_with_backoff(self, 
+                          retry_exceptions: tuple = (Exception,), 
+                          max_retries: Optional[int] = None, 
+                          base_delay: Optional[float] = None,
+                          jitter: bool = True):
         """
-        Decorator for retry logic with exponential backoff.
-        
-        Args:
-            retry_exceptions: Tuple of exceptions to retry on
-            max_retries: Override max retries for this function
-            base_delay: Override base delay for this function
+        Decorator for retry logic with exponential backoff and jitter
         """
         def decorator(func):
             @wraps(func)
             async def async_wrapper(*args, **kwargs):
-                return await self._retry_async(
-                    func, *args, **kwargs,
-                    retry_exceptions=retry_exceptions,
-                    max_retries=max_retries or self.max_retries,
-                    base_delay=base_delay or self.base_delay
-                )
-            
+                retries = max_retries or self.max_retries
+                delay = base_delay or self.base_delay
+                
+                for attempt in range(retries + 1):
+                    try:
+                        if asyncio.iscoroutinefunction(func):
+                            return await func(*args, **kwargs)
+                        else:
+                            return func(*args, **kwargs)
+                    except retry_exceptions as e:
+                        if attempt == retries:
+                            await self._handle_final_failure(e, func.__name__, args, kwargs)
+                            raise
+                        
+                        wait_time = delay * (2 ** attempt)
+                        if jitter:
+                            wait_time += random.uniform(0, 0.1 * wait_time)
+                        
+                        await self._handle_retry(e, attempt, wait_time, func.__name__)
+                        await asyncio.sleep(wait_time)
+                
             @wraps(func)
             def sync_wrapper(*args, **kwargs):
-                return self._retry_sync(
-                    func, *args, **kwargs,
-                    retry_exceptions=retry_exceptions,
-                    max_retries=max_retries or self.max_retries,
-                    base_delay=base_delay or self.base_delay
-                )
+                retries = max_retries or self.max_retries
+                delay = base_delay or self.base_delay
+                
+                for attempt in range(retries + 1):
+                    try:
+                        return func(*args, **kwargs)
+                    except retry_exceptions as e:
+                        if attempt == retries:
+                            self._handle_final_failure_sync(e, func.__name__, args, kwargs)
+                            raise
+                        
+                        wait_time = delay * (2 ** attempt)
+                        if jitter:
+                            wait_time += random.uniform(0, 0.1 * wait_time)
+                        
+                        self._handle_retry_sync(e, attempt, wait_time, func.__name__)
+                        time.sleep(wait_time)
+                
+                return None
             
             if asyncio.iscoroutinefunction(func):
                 return async_wrapper
             else:
                 return sync_wrapper
-        
         return decorator
-    
-    async def _retry_async(
-        self,
-        func: Callable,
-        *args,
-        retry_exceptions: tuple = (Exception,),
-        max_retries: int = 3,
-        base_delay: float = 1.0,
-        **kwargs
-    ):
-        """Async retry implementation."""
-        last_exception = None
+
+    async def _handle_retry(self, exception: Exception, attempt: int, wait_time: float, func_name: str):
+        """Handle retry attempt with logging and metrics"""
+        error_event = ErrorEvent(
+            timestamp=datetime.now(),
+            error_type=type(exception).__name__,
+            error_message=str(exception),
+            severity=self._determine_severity(exception),
+            source=func_name,
+            context={
+                "attempt": attempt + 1,
+                "wait_time": wait_time,
+                "function": func_name
+            },
+            stack_trace=traceback.format_exc(),
+            retry_count=attempt
+        )
         
-        for attempt in range(max_retries + 1):
-            try:
-                # Check circuit breaker
-                if self.circuit_breaker_state == CircuitBreakerState.OPEN:
-                    if self._should_half_open():
-                        self.circuit_breaker_state = CircuitBreakerState.HALF_OPEN
-                        logger.info("Circuit breaker half-opening")
-                    else:
-                        raise Exception("Circuit breaker is open")
-                
-                # Execute function
-                result = await func(*args, **kwargs)
-                
-                # Record success
-                self._record_success()
-                return result
-                
-            except retry_exceptions as e:
-                last_exception = e
-                self._record_failure(e)
-                
-                if attempt < max_retries:
-                    delay = self._calculate_delay(attempt, base_delay)
-                    logger.warning(f"Attempt {attempt + 1} failed: {e}. Retrying in {delay:.2f}s")
-                    await asyncio.sleep(delay)
-                else:
-                    logger.error(f"All {max_retries + 1} attempts failed. Last error: {e}")
+        self._record_error_event(error_event)
+        logger.warning(
+            "Retry attempt",
+            attempt=attempt + 1,
+            function=func_name,
+            error=str(exception),
+            wait_time=wait_time
+        )
+
+    def _handle_retry_sync(self, exception: Exception, attempt: int, wait_time: float, func_name: str):
+        """Handle retry attempt for synchronous functions"""
+        error_event = ErrorEvent(
+            timestamp=datetime.now(),
+            error_type=type(exception).__name__,
+            error_message=str(exception),
+            severity=self._determine_severity(exception),
+            source=func_name,
+            context={
+                "attempt": attempt + 1,
+                "wait_time": wait_time,
+                "function": func_name
+            },
+            stack_trace=traceback.format_exc(),
+            retry_count=attempt
+        )
         
-        raise last_exception
-    
-    def _retry_sync(
-        self,
-        func: Callable,
-        *args,
-        retry_exceptions: tuple = (Exception,),
-        max_retries: int = 3,
-        base_delay: float = 1.0,
-        **kwargs
-    ):
-        """Sync retry implementation."""
-        last_exception = None
+        self._record_error_event(error_event)
+        logger.warning(
+            "Retry attempt",
+            attempt=attempt + 1,
+            function=func_name,
+            error=str(exception),
+            wait_time=wait_time
+        )
+
+    async def _handle_final_failure(self, exception: Exception, func_name: str, args: tuple, kwargs: dict):
+        """Handle final failure after all retries exhausted"""
+        error_event = ErrorEvent(
+            timestamp=datetime.now(),
+            error_type=type(exception).__name__,
+            error_message=str(exception),
+            severity=self._determine_severity(exception),
+            source=func_name,
+            context={
+                "function": func_name,
+                "args": str(args),
+                "kwargs": str(kwargs)
+            },
+            stack_trace=traceback.format_exc(),
+            retry_count=self.max_retries
+        )
         
-        for attempt in range(max_retries + 1):
-            try:
-                # Check circuit breaker
-                if self.circuit_breaker_state == CircuitBreakerState.OPEN:
-                    if self._should_half_open():
-                        self.circuit_breaker_state = CircuitBreakerState.HALF_OPEN
-                        logger.info("Circuit breaker half-opening")
-                    else:
-                        raise Exception("Circuit breaker is open")
-                
-                # Execute function
-                result = func(*args, **kwargs)
-                
-                # Record success
-                self._record_success()
-                return result
-                
-            except retry_exceptions as e:
-                last_exception = e
-                self._record_failure(e)
-                
-                if attempt < max_retries:
-                    delay = self._calculate_delay(attempt, base_delay)
-                    logger.warning(f"Attempt {attempt + 1} failed: {e}. Retrying in {delay:.2f}s")
-                    time.sleep(delay)
-                else:
-                    logger.error(f"All {max_retries + 1} attempts failed. Last error: {e}")
+        self._record_error_event(error_event)
+        self._record_failure(exception)
         
-        raise last_exception
-    
-    def _calculate_delay(self, attempt: int, base_delay: float) -> float:
-        """Calculate delay for exponential backoff."""
-        delay = base_delay * (self.exponential_base ** attempt)
-        delay = min(delay, self.max_delay)
+        logger.error(
+            "Final failure after retries",
+            function=func_name,
+            error=str(exception),
+            retry_count=self.max_retries
+        )
         
-        if self.jitter:
-            # Add random jitter (±25%)
-            jitter = random.uniform(0.75, 1.25)
-            delay *= jitter
+        if self.enable_alerting:
+            await self._send_alert(error_event)
+
+    def _handle_final_failure_sync(self, exception: Exception, func_name: str, args: tuple, kwargs: dict):
+        """Handle final failure for synchronous functions"""
+        error_event = ErrorEvent(
+            timestamp=datetime.now(),
+            error_type=type(exception).__name__,
+            error_message=str(exception),
+            severity=self._determine_severity(exception),
+            source=func_name,
+            context={
+                "function": func_name,
+                "args": str(args),
+                "kwargs": str(kwargs)
+            },
+            stack_trace=traceback.format_exc(),
+            retry_count=self.max_retries
+        )
         
-        return delay
-    
-    def _record_success(self):
-        """Record a successful request."""
-        self.successful_requests += 1
-        self.success_count += 1
-        self.failure_count = 0
+        self._record_error_event(error_event)
+        self._record_failure(exception)
         
-        if self.circuit_breaker_state == CircuitBreakerState.HALF_OPEN:
-            if self.success_count >= 3:  # Require 3 successes to close circuit
-                self.circuit_breaker_state = CircuitBreakerState.CLOSED
-                self.success_count = 0
-                logger.info("Circuit breaker closed")
-    
+        logger.error(
+            "Final failure after retries",
+            function=func_name,
+            error=str(exception),
+            retry_count=self.max_retries
+        )
+
     def _record_failure(self, exception: Exception):
-        """Record a failed request."""
-        self.failed_requests += 1
+        """Record failure for circuit breaker logic"""
         self.failure_count += 1
-        self.success_count = 0
-        self.last_failure_time = datetime.utcnow()
+        self.last_failure_time = datetime.now()
         
-        # Categorize error
-        error_type = self._categorize_error(exception)
-        self.error_counts[error_type] = self.error_counts.get(error_type, 0) + 1
-        
-        # Add to error history
-        self.error_history.append({
-            'timestamp': datetime.utcnow(),
-            'error_type': error_type,
-            'error_message': str(exception),
-            'failure_count': self.failure_count
-        })
-        
-        # Keep only recent errors
-        if len(self.error_history) > 100:
-            self.error_history = self.error_history[-100:]
-        
-        # Check circuit breaker
         if self.failure_count >= self.circuit_breaker_threshold:
             self.circuit_breaker_state = CircuitBreakerState.OPEN
-            logger.warning(f"Circuit breaker opened after {self.failure_count} failures")
-    
-    def _should_half_open(self) -> bool:
-        """Check if circuit breaker should half-open."""
-        if self.last_failure_time is None:
-            return False
+            logger.error(
+                "Circuit breaker opened",
+                failure_count=self.failure_count,
+                threshold=self.circuit_breaker_threshold
+            )
+
+    def _record_error_event(self, error_event: ErrorEvent):
+        """Record error event for tracking and analysis"""
+        self.error_events.append(error_event)
         
-        time_since_failure = (datetime.utcnow() - self.last_failure_time).total_seconds()
-        return time_since_failure >= self.circuit_breaker_timeout
-    
-    def _categorize_error(self, exception: Exception) -> ErrorType:
-        """Categorize an exception by type."""
+        # Update error statistics
+        error_type = error_event.error_type
+        self.error_stats[error_type] = self.error_stats.get(error_type, 0) + 1
+        
+        # Check if we should send an alert
+        if self._should_send_alert(error_event):
+            asyncio.create_task(self._send_alert(error_event))
+
+    def _determine_severity(self, exception: Exception) -> ErrorSeverity:
+        """Determine error severity based on exception type and message"""
         error_message = str(exception).lower()
         
-        if any(word in error_message for word in ['timeout', 'timed out']):
-            return ErrorType.TIMEOUT
-        elif any(word in error_message for word in ['rate limit', 'too many requests', '429']):
-            return ErrorType.RATE_LIMIT
-        elif any(word in error_message for word in ['unauthorized', '401', 'authentication']):
-            return ErrorType.AUTHENTICATION
-        elif any(word in error_message for word in ['forbidden', '403', 'authorization']):
-            return ErrorType.AUTHORIZATION
-        elif any(word in error_message for word in ['validation', 'invalid']):
-            return ErrorType.VALIDATION
-        elif any(word in error_message for word in ['database', 'sql', 'connection']):
-            return ErrorType.DATABASE
-        elif any(word in error_message for word in ['parse', 'json', 'xml']):
-            return ErrorType.PARSING
-        elif any(word in error_message for word in ['network', 'connection', 'dns']):
-            return ErrorType.NETWORK
-        else:
-            return ErrorType.UNKNOWN
-    
-    def get_error_severity(self, error_type: ErrorType) -> ErrorSeverity:
-        """Get severity level for an error type."""
-        severity_map = {
-            ErrorType.NETWORK: ErrorSeverity.MEDIUM,
-            ErrorType.TIMEOUT: ErrorSeverity.MEDIUM,
-            ErrorType.RATE_LIMIT: ErrorSeverity.LOW,
-            ErrorType.AUTHENTICATION: ErrorSeverity.HIGH,
-            ErrorType.AUTHORIZATION: ErrorSeverity.HIGH,
-            ErrorType.VALIDATION: ErrorSeverity.MEDIUM,
-            ErrorType.DATABASE: ErrorSeverity.HIGH,
-            ErrorType.PARSING: ErrorSeverity.MEDIUM,
-            ErrorType.UNKNOWN: ErrorSeverity.MEDIUM
-        }
-        return severity_map.get(error_type, ErrorSeverity.MEDIUM)
-    
-    def get_stats(self) -> Dict[str, Any]:
-        """Get error handler statistics."""
-        total_requests = self.successful_requests + self.failed_requests
-        success_rate = (self.successful_requests / total_requests * 100) if total_requests > 0 else 0
+        # Critical errors
+        if any(keyword in error_message for keyword in ['database', 'connection', 'timeout', 'authentication']):
+            return ErrorSeverity.CRITICAL
         
-        return {
-            'total_requests': total_requests,
-            'successful_requests': self.successful_requests,
-            'failed_requests': self.failed_requests,
-            'success_rate': success_rate,
-            'retried_requests': self.retried_requests,
-            'circuit_breaker_state': self.circuit_breaker_state.value,
-            'failure_count': self.failure_count,
-            'success_count': self.success_count,
-            'last_failure_time': self.last_failure_time,
-            'error_counts': {error_type.value: count for error_type, count in self.error_counts.items()},
-            'recent_errors': self.error_history[-10:] if self.error_history else []
-        }
-    
-    def reset_stats(self):
-        """Reset error handler statistics."""
-        self.total_requests = 0
-        self.successful_requests = 0
-        self.failed_requests = 0
-        self.retried_requests = 0
-        self.error_history.clear()
-        self.error_counts.clear()
-        logger.info("Error handler statistics reset")
-    
-    def reset_circuit_breaker(self):
-        """Reset circuit breaker to closed state."""
-        self.circuit_breaker_state = CircuitBreakerState.CLOSED
-        self.failure_count = 0
-        self.success_count = 0
-        self.last_failure_time = None
-        logger.info("Circuit breaker reset to closed state")
-    
-    def get_error_summary(self, hours: int = 24) -> Dict[str, Any]:
-        """Get error summary for the last N hours."""
-        cutoff_time = datetime.utcnow() - timedelta(hours=hours)
+        # High severity errors
+        if any(keyword in error_message for keyword in ['api', 'rate limit', 'quota', 'validation']):
+            return ErrorSeverity.HIGH
         
+        # Medium severity errors
+        if any(keyword in error_message for keyword in ['parsing', 'format', 'data']):
+            return ErrorSeverity.MEDIUM
+        
+        # Default to low severity
+        return ErrorSeverity.LOW
+
+    def _should_send_alert(self, error_event: ErrorEvent) -> bool:
+        """Determine if an alert should be sent based on severity and frequency"""
+        severity = error_event.severity
+        threshold = self.alert_thresholds.get(severity, 1)
+        
+        # Count recent errors of this severity
         recent_errors = [
-            error for error in self.error_history
-            if error['timestamp'] >= cutoff_time
+            e for e in self.error_events 
+            if e.severity == severity and 
+            e.timestamp > datetime.now() - timedelta(hours=1)
         ]
         
-        if not recent_errors:
-            return {
-                'period_hours': hours,
-                'total_errors': 0,
-                'error_types': {},
-                'most_common_error': None,
-                'error_trend': 'stable'
-            }
+        return len(recent_errors) >= threshold
+
+    async def _send_alert(self, error_event: ErrorEvent):
+        """Send alert for critical errors"""
+        alert_data = {
+            "timestamp": error_event.timestamp.isoformat(),
+            "severity": error_event.severity.value,
+            "error_type": error_event.error_type,
+            "error_message": error_event.error_message,
+            "source": error_event.source,
+            "context": error_event.context
+        }
         
-        # Count errors by type
-        error_type_counts = {}
-        for error in recent_errors:
-            error_type = error['error_type'].value
-            error_type_counts[error_type] = error_type_counts.get(error_type, 0) + 1
+        logger.error(
+            "Sending alert",
+            alert_data=alert_data
+        )
         
-        # Find most common error
-        most_common_error = max(error_type_counts.items(), key=lambda x: x[1])[0] if error_type_counts else None
+        # TODO: Integrate with actual alerting system (email, Slack, etc.)
+        # For now, just log the alert
+
+    def can_execute(self) -> bool:
+        """Check if circuit breaker allows execution"""
+        if self.circuit_breaker_state == CircuitBreakerState.CLOSED:
+            return True
         
-        # Calculate error trend (simplified)
-        first_half = [e for e in recent_errors if e['timestamp'] < cutoff_time + timedelta(hours=hours/2)]
-        second_half = [e for e in recent_errors if e['timestamp'] >= cutoff_time + timedelta(hours=hours/2)]
+        if self.circuit_breaker_state == CircuitBreakerState.OPEN:
+            if datetime.now() - self.last_failure_time > timedelta(seconds=self.circuit_breaker_timeout):
+                self.circuit_breaker_state = CircuitBreakerState.HALF_OPEN
+                return True
+            return False
         
-        if len(first_half) > len(second_half):
-            trend = 'decreasing'
-        elif len(first_half) < len(second_half):
-            trend = 'increasing'
-        else:
-            trend = 'stable'
-        
+        # HALF_OPEN state - allow one attempt
+        return True
+
+    def record_success(self):
+        """Record successful execution to reset circuit breaker"""
+        if self.circuit_breaker_state == CircuitBreakerState.HALF_OPEN:
+            self.circuit_breaker_state = CircuitBreakerState.CLOSED
+            self.failure_count = 0
+            logger.info("Circuit breaker reset to closed state")
+
+    def get_error_summary(self) -> Dict[str, Any]:
+        """Get summary of error statistics"""
         return {
-            'period_hours': hours,
-            'total_errors': len(recent_errors),
-            'error_types': error_type_counts,
-            'most_common_error': most_common_error,
-            'error_trend': trend,
-            'recent_errors': recent_errors[-5:]  # Last 5 errors
+            "total_errors": len(self.error_events),
+            "error_stats": self.error_stats,
+            "circuit_breaker_state": self.circuit_breaker_state.value,
+            "failure_count": self.failure_count,
+            "recent_errors": [
+                asdict(e) for e in self.error_events[-10:]  # Last 10 errors
+            ]
         }
 
+    def clear_old_errors(self, hours: int = 24):
+        """Clear old error events to prevent memory bloat"""
+        cutoff_time = datetime.now() - timedelta(hours=hours)
+        self.error_events = [
+            e for e in self.error_events 
+            if e.timestamp > cutoff_time
+        ]
+        logger.info(f"Cleared error events older than {hours} hours")
 
-class RetryableError(Exception):
-    """Exception that can be retried."""
-    pass
+# Global error handler instance
+global_error_handler = ErrorHandler()
 
-
-class NonRetryableError(Exception):
-    """Exception that should not be retried."""
-    pass
-
-
-class RateLimitError(RetryableError):
-    """Rate limit exceeded error."""
-    pass
-
-
-class TimeoutError(RetryableError):
-    """Timeout error."""
-    pass
-
-
-class NetworkError(RetryableError):
-    """Network-related error."""
-    pass
-
-
-class ValidationError(NonRetryableError):
-    """Data validation error."""
-    pass
-
-
-class AuthenticationError(NonRetryableError):
-    """Authentication error."""
-    pass
-
-
-# Example usage
-async def test_error_handler():
-    """Test the error handler functionality."""
-    error_handler = ErrorHandler(
-        max_retries=3,
-        base_delay=1.0,
-        circuit_breaker_threshold=3
-    )
-    
-    # Test function that fails
-    @error_handler.retry_with_backoff(retry_exceptions=(Exception,))
-    async def failing_function(attempt: int):
-        if attempt < 2:
-            raise Exception(f"Simulated failure {attempt}")
-        return "Success!"
-    
+# Convenience functions for common error handling patterns
+async def handle_data_collection_error(func: Callable, *args, **kwargs):
+    """Handle errors specifically for data collection operations"""
     try:
-        result = await failing_function(0)
-        print(f"Result: {result}")
+        if not global_error_handler.can_execute():
+            raise Exception("Circuit breaker is open")
+        
+        result = await func(*args, **kwargs)
+        global_error_handler.record_success()
+        return result
     except Exception as e:
-        print(f"Final error: {e}")
-    
-    # Get stats
-    stats = error_handler.get_stats()
-    print(f"Error handler stats: {stats}")
+        await global_error_handler._handle_final_failure(e, func.__name__, args, kwargs)
+        raise
 
-
-if __name__ == "__main__":
-    asyncio.run(test_error_handler())
+def handle_validation_error(data: Dict[str, Any], validator_func: Callable) -> Dict[str, Any]:
+    """Handle errors specifically for data validation operations"""
+    try:
+        return validator_func(data)
+    except Exception as e:
+        error_event = ErrorEvent(
+            timestamp=datetime.now(),
+            error_type=type(e).__name__,
+            error_message=str(e),
+            severity=ErrorSeverity.MEDIUM,
+            source="data_validation",
+            context={"data_keys": list(data.keys())},
+            stack_trace=traceback.format_exc()
+        )
+        global_error_handler._record_error_event(error_event)
+        raise
