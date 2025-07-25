@@ -535,12 +535,10 @@ class PortfolioRiskManager:
             Dictionary of limit violations
         """
         violations = {}
-        
-        violations['max_drawdown'] = abs(metrics.current_drawdown) > self.risk_limits.max_drawdown
-        violations['max_var'] = abs(metrics.var_95) > self.risk_limits.max_var
-        violations['max_concentration'] = metrics.concentration_risk > self.risk_limits.max_concentration
-        violations['max_leverage'] = metrics.leverage > self.risk_limits.max_leverage
-        
+        violations['max_drawdown'] = bool(abs(metrics.current_drawdown) > self.risk_limits.max_drawdown)
+        violations['max_var'] = bool(abs(metrics.var_95) > self.risk_limits.max_var)
+        violations['max_concentration'] = bool(metrics.concentration_risk > self.risk_limits.max_concentration)
+        violations['max_leverage'] = bool(metrics.leverage > self.risk_limits.max_leverage)
         return violations
     
     def generate_risk_report(self) -> str:
