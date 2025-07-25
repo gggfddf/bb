@@ -1,7 +1,7 @@
 """
-LSTM Model Implementation for Sequence Prediction
+GRU Model Implementation for Sequence Prediction
 
-A comprehensive LSTM implementation using TensorFlow/Keras for time series
+A comprehensive GRU implementation using TensorFlow/Keras for time series
 and sequence prediction tasks in stock market analysis.
 """
 
@@ -22,23 +22,23 @@ try:
     TENSORFLOW_AVAILABLE = True
 except ImportError:
     TENSORFLOW_AVAILABLE = False
-    warnings.warn("TensorFlow not available. LSTM functionality will be limited.")
+    warnings.warn("TensorFlow not available. GRU functionality will be limited.")
 
 logger = structlog.get_logger()
 
 class TaskType(Enum):
-    """Supported task types for LSTM."""
+    """Supported task types for GRU."""
     REGRESSION = "regression"
     CLASSIFICATION = "classification"
 
 @dataclass
-class LSTMConfig:
-    """Configuration for LSTM model."""
+class GRUConfig:
+    """Configuration for GRU model."""
     # Architecture parameters
     sequence_length: int = 60
     n_features: int = 1
-    n_lstm_layers: int = 2
-    lstm_units: List[int] = field(default_factory=lambda: [50, 50])
+    n_gru_layers: int = 2
+    gru_units: List[int] = field(default_factory=lambda: [50, 50])
     dropout_rate: float = 0.2
     recurrent_dropout: float = 0.2
     
@@ -59,7 +59,6 @@ class LSTMConfig:
     
     # Additional parameters
     use_bidirectional: bool = False
-    use_attention: bool = False
     return_sequences: bool = False
 
 @dataclass
@@ -71,10 +70,10 @@ class TrainingResult:
     best_val_loss: float
     best_val_accuracy: Optional[float] = None
     training_time: float = 0.0
-    config: LSTMConfig = None
+    config: GRUConfig = None
 
 class SequenceDataPreparator:
-    """Handles sequence data preparation for LSTM models."""
+    """Handles sequence data preparation for GRU models."""
     
     def __init__(self, sequence_length: int = 60):
         self.sequence_length = sequence_length
@@ -140,52 +139,52 @@ class SequenceDataPreparator:
         """
         return self.create_sequences(data, targets)
 
-class LSTMModel:
+class GRUModel:
     """
-    LSTM model implementation for sequence prediction.
+    GRU model implementation for sequence prediction.
     """
     
-    def __init__(self, config: LSTMConfig):
+    def __init__(self, config: GRUConfig):
         """
-        Initialize LSTM model.
+        Initialize GRU model.
         
         Args:
-            config: LSTM configuration
+            config: GRU configuration
         """
         if not TENSORFLOW_AVAILABLE:
-            logger.warning("TensorFlow not available. LSTM model will be limited to configuration and data preparation.")
+            logger.warning("TensorFlow not available. GRU model will be limited to configuration and data preparation.")
             
         self.config = config
         self.model = None
         self.data_preparator = SequenceDataPreparator(config.sequence_length)
         
-        logger.info("LSTM model initialized",
+        logger.info("GRU model initialized",
                    sequence_length=config.sequence_length,
                    n_features=config.n_features,
                    task_type=config.task_type.value)
     
     def build_model(self):
         """
-        Build LSTM model architecture.
+        Build GRU model architecture.
         
         Returns:
             Compiled model
         """
         if not TENSORFLOW_AVAILABLE:
-            raise ImportError("TensorFlow is required to build LSTM model")
+            raise ImportError("TensorFlow is required to build GRU model")
             
         model = keras.Sequential()
         
         # Input layer
         model.add(layers.Input(shape=(self.config.sequence_length, self.config.n_features)))
         
-        # LSTM layers
-        for i, units in enumerate(self.config.lstm_units):
-            return_sequences = (i < len(self.config.lstm_units) - 1) or self.config.return_sequences
+        # GRU layers
+        for i, units in enumerate(self.config.gru_units):
+            return_sequences = (i < len(self.config.gru_units) - 1) or self.config.return_sequences
             
             if self.config.use_bidirectional:
-                lstm_layer = layers.Bidirectional(
-                    layers.LSTM(
+                gru_layer = layers.Bidirectional(
+                    layers.GRU(
                         units,
                         return_sequences=return_sequences,
                         dropout=self.config.dropout_rate,
@@ -193,16 +192,16 @@ class LSTMModel:
                     )
                 )
             else:
-                lstm_layer = layers.LSTM(
+                gru_layer = layers.GRU(
                     units,
                     return_sequences=return_sequences,
                     dropout=self.config.dropout_rate,
                     recurrent_dropout=self.config.recurrent_dropout
                 )
             
-            model.add(lstm_layer)
+            model.add(gru_layer)
             
-            # Add dropout after each LSTM layer (except the last one if return_sequences=False)
+            # Add dropout after each GRU layer (except the last one if return_sequences=False)
             if return_sequences:
                 model.add(layers.Dropout(self.config.dropout_rate))
         
@@ -232,7 +231,7 @@ class LSTMModel:
         
         self.model = model
         
-        logger.info("LSTM model built successfully",
+        logger.info("GRU model built successfully",
                    total_params=model.count_params(),
                    task_type=self.config.task_type.value)
         
@@ -256,7 +255,7 @@ class LSTMModel:
     
     def train(self, X: np.ndarray, y: np.ndarray, validation_data: Optional[Tuple] = None) -> TrainingResult:
         """
-        Train the LSTM model.
+        Train the GRU model.
         
         Args:
             X: Training sequences
@@ -287,7 +286,7 @@ class LSTMModel:
             )
         ]
         
-        logger.info("Starting LSTM training",
+        logger.info("Starting GRU training",
                    epochs=self.config.epochs,
                    batch_size=self.config.batch_size,
                    validation_split=self.config.validation_split)
@@ -322,7 +321,7 @@ class LSTMModel:
             config=self.config
         )
         
-        logger.info("LSTM training completed",
+        logger.info("GRU training completed",
                    best_epoch=best_epoch,
                    best_val_loss=best_val_loss,
                    training_time=training_time)
@@ -384,26 +383,155 @@ class LSTMModel:
         self.model = keras.models.load_model(filepath)
         logger.info("Model loaded", filepath=filepath)
 
+class ModelComparison:
+    """Framework for comparing GRU and LSTM models."""
+    
+    def __init__(self):
+        self.results = {}
+    
+    def compare_models(self, 
+                      data: np.ndarray, 
+                      targets: np.ndarray,
+                      sequence_length: int = 60,
+                      n_features: int = 1,
+                      task_type: TaskType = TaskType.REGRESSION,
+                      **kwargs) -> Dict[str, Any]:
+        """
+        Compare GRU and LSTM models on the same dataset.
+        
+        Args:
+            data: Input time series data
+            targets: Target values
+            sequence_length: Length of sequences
+            n_features: Number of features
+            task_type: Type of task (regression/classification)
+            **kwargs: Additional parameters for models
+            
+        Returns:
+            Dictionary with comparison results
+        """
+        logger.info("Starting model comparison")
+        
+        # Create GRU model
+        gru_config = GRUConfig(
+            sequence_length=sequence_length,
+            n_features=n_features,
+            task_type=task_type,
+            **kwargs
+        )
+        gru_model = GRUModel(gru_config)
+        
+        # Create LSTM model (import here to avoid circular imports)
+        try:
+            from ml_models.deep_learning.lstm_model import LSTMModel, LSTMConfig
+            lstm_config = LSTMConfig(
+                sequence_length=sequence_length,
+                n_features=n_features,
+                task_type=task_type,
+                **kwargs
+            )
+            lstm_model = LSTMModel(lstm_config)
+        except ImportError:
+            logger.warning("LSTM model not available for comparison")
+            lstm_model = None
+        
+        # Prepare data
+        X, y = gru_model.prepare_data(data, targets)
+        
+        # Train GRU model
+        try:
+            gru_result = gru_model.train(X, y)
+            self.results['gru'] = {
+                'model': gru_model,
+                'result': gru_result,
+                'config': gru_config
+            }
+        except Exception as e:
+            logger.error("GRU training failed", error=str(e))
+            self.results['gru'] = None
+        
+        # Train LSTM model if available
+        if lstm_model is not None:
+            try:
+                lstm_result = lstm_model.train(X, y)
+                self.results['lstm'] = {
+                    'model': lstm_model,
+                    'result': lstm_result,
+                    'config': lstm_config
+                }
+            except Exception as e:
+                logger.error("LSTM training failed", error=str(e))
+                self.results['lstm'] = None
+        
+        # Generate comparison summary
+        comparison = self._generate_comparison_summary()
+        
+        logger.info("Model comparison completed", comparison=comparison)
+        
+        return comparison
+    
+    def _generate_comparison_summary(self) -> Dict[str, Any]:
+        """Generate summary of model comparison."""
+        summary = {
+            'models_tested': list(self.results.keys()),
+            'best_model': None,
+            'comparison_metrics': {}
+        }
+        
+        if 'gru' in self.results and self.results['gru'] is not None:
+            gru_result = self.results['gru']['result']
+            summary['comparison_metrics']['gru'] = {
+                'best_val_loss': gru_result.best_val_loss,
+                'best_val_accuracy': gru_result.best_val_accuracy,
+                'training_time': gru_result.training_time,
+                'best_epoch': gru_result.best_epoch
+            }
+        
+        if 'lstm' in self.results and self.results['lstm'] is not None:
+            lstm_result = self.results['lstm']['result']
+            summary['comparison_metrics']['lstm'] = {
+                'best_val_loss': lstm_result.best_val_loss,
+                'best_val_accuracy': lstm_result.best_val_accuracy,
+                'training_time': lstm_result.training_time,
+                'best_epoch': lstm_result.best_epoch
+            }
+        
+        # Determine best model
+        if 'gru' in summary['comparison_metrics'] and 'lstm' in summary['comparison_metrics']:
+            gru_loss = summary['comparison_metrics']['gru']['best_val_loss']
+            lstm_loss = summary['comparison_metrics']['lstm']['best_val_loss']
+            
+            if gru_loss < lstm_loss:
+                summary['best_model'] = 'gru'
+            else:
+                summary['best_model'] = 'lstm'
+        elif 'gru' in summary['comparison_metrics']:
+            summary['best_model'] = 'gru'
+        elif 'lstm' in summary['comparison_metrics']:
+            summary['best_model'] = 'lstm'
+        
+        return summary
+
 # Convenience functions
-def create_lstm_model(sequence_length: int = 60,
-                     n_features: int = 1,
-                     task_type: TaskType = TaskType.REGRESSION,
-                     **kwargs) -> LSTMModel:
-    """Create an LSTM model with default configuration."""
-    config = LSTMConfig(
+def create_gru_model(sequence_length: int = 60,
+                    n_features: int = 1,
+                    task_type: TaskType = TaskType.REGRESSION,
+                    **kwargs) -> GRUModel:
+    """Create a GRU model with default configuration."""
+    config = GRUConfig(
         sequence_length=sequence_length,
         n_features=n_features,
         task_type=task_type,
         **kwargs
     )
-    return LSTMModel(config)
+    return GRUModel(config)
 
-def create_classification_lstm(sequence_length: int = 60,
-                             n_features: int = 1,
-                             n_classes: int = 2,
-                             **kwargs) -> LSTMModel:
-    """Create an LSTM model for classification tasks."""
-    return create_lstm_model(
+def create_classification_gru(sequence_length: int = 60,
+                            n_features: int = 1,
+                            n_classes: int = 2,
+                            **kwargs) -> GRUModel:
+    """Create a GRU model for classification tasks."""
+    return create_gru_model(
         sequence_length=sequence_length,
         n_features=n_features,
         task_type=TaskType.CLASSIFICATION,
@@ -411,11 +539,11 @@ def create_classification_lstm(sequence_length: int = 60,
         **kwargs
     )
 
-def create_regression_lstm(sequence_length: int = 60,
-                          n_features: int = 1,
-                          **kwargs) -> LSTMModel:
-    """Create an LSTM model for regression tasks."""
-    return create_lstm_model(
+def create_regression_gru(sequence_length: int = 60,
+                         n_features: int = 1,
+                         **kwargs) -> GRUModel:
+    """Create a GRU model for regression tasks."""
+    return create_gru_model(
         sequence_length=sequence_length,
         n_features=n_features,
         task_type=TaskType.REGRESSION,

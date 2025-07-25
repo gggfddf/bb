@@ -1,7 +1,7 @@
 """
-LSTM Model Implementation for Sequence Prediction
+Transformer Model Implementation for Sequence Prediction
 
-A comprehensive LSTM implementation using TensorFlow/Keras for time series
+A comprehensive Transformer implementation using TensorFlow/Keras for time series
 and sequence prediction tasks in stock market analysis.
 """
 
@@ -13,6 +13,7 @@ from enum import Enum
 import structlog
 from datetime import datetime
 import warnings
+import math
 
 try:
     import tensorflow as tf
@@ -22,25 +23,26 @@ try:
     TENSORFLOW_AVAILABLE = True
 except ImportError:
     TENSORFLOW_AVAILABLE = False
-    warnings.warn("TensorFlow not available. LSTM functionality will be limited.")
+    warnings.warn("TensorFlow not available. Transformer functionality will be limited.")
 
 logger = structlog.get_logger()
 
 class TaskType(Enum):
-    """Supported task types for LSTM."""
+    """Supported task types for Transformer."""
     REGRESSION = "regression"
     CLASSIFICATION = "classification"
 
 @dataclass
-class LSTMConfig:
-    """Configuration for LSTM model."""
+class TransformerConfig:
+    """Configuration for Transformer model."""
     # Architecture parameters
     sequence_length: int = 60
     n_features: int = 1
-    n_lstm_layers: int = 2
-    lstm_units: List[int] = field(default_factory=lambda: [50, 50])
-    dropout_rate: float = 0.2
-    recurrent_dropout: float = 0.2
+    d_model: int = 128
+    n_heads: int = 8
+    n_layers: int = 4
+    d_ff: int = 512
+    dropout_rate: float = 0.1
     
     # Training parameters
     batch_size: int = 32
@@ -58,9 +60,8 @@ class LSTMConfig:
     restore_best_weights: bool = True
     
     # Additional parameters
-    use_bidirectional: bool = False
-    use_attention: bool = False
-    return_sequences: bool = False
+    use_positional_encoding: bool = True
+    max_position: int = 1000
 
 @dataclass
 class TrainingResult:
@@ -71,10 +72,136 @@ class TrainingResult:
     best_val_loss: float
     best_val_accuracy: Optional[float] = None
     training_time: float = 0.0
-    config: LSTMConfig = None
+    config: TransformerConfig = None
+
+class PositionalEncoding:
+    """Positional encoding layer for Transformer."""
+    
+    def __init__(self, d_model: int, max_position: int = 1000, **kwargs):
+        self.d_model = d_model
+        self.max_position = max_position
+        
+        # Create positional encoding matrix
+        pe = np.zeros((max_position, d_model))
+        position = np.arange(0, max_position, dtype=np.float32)[:, np.newaxis]
+        div_term = np.exp(np.arange(0, d_model, 2, dtype=np.float32) * -(math.log(10000.0) / d_model))
+        
+        pe[:, 0::2] = np.sin(position * div_term)
+        pe[:, 1::2] = np.cos(position * div_term)
+        
+        try:
+            self.pe = tf.constant(pe, dtype=tf.float32)
+        except:
+            self.pe = pe
+    
+    def call(self, x):
+        try:
+            seq_len = tf.shape(x)[1]
+            return x + self.pe[:seq_len, :]
+        except:
+            # Fallback if TensorFlow is not available
+            seq_len = x.shape[1]
+            return x + self.pe[:seq_len, :]
+
+class MultiHeadAttention:
+    """Multi-head attention mechanism."""
+    
+    def __init__(self, d_model: int, n_heads: int, **kwargs):
+        self.d_model = d_model
+        self.n_heads = n_heads
+        assert d_model % n_heads == 0
+        
+        self.d_k = d_model // n_heads
+        
+        if TENSORFLOW_AVAILABLE:
+            self.wq = layers.Dense(d_model)
+            self.wk = layers.Dense(d_model)
+            self.wv = layers.Dense(d_model)
+            self.wo = layers.Dense(d_model)
+        else:
+            self.wq = None
+            self.wk = None
+            self.wv = None
+            self.wo = None
+    
+    def scaled_dot_product_attention(self, q, k, v, mask=None):
+        """Scaled dot-product attention."""
+        matmul_qk = tf.matmul(q, k, transpose_b=True)
+        
+        dk = tf.cast(tf.shape(k)[-1], tf.float32)
+        scaled_attention_logits = matmul_qk / tf.math.sqrt(dk)
+        
+        if mask is not None:
+            scaled_attention_logits += (mask * -1e9)
+        
+        attention_weights = tf.nn.softmax(scaled_attention_logits, axis=-1)
+        output = tf.matmul(attention_weights, v)
+        
+        return output, attention_weights
+    
+    def call(self, x, mask=None):
+        batch_size = tf.shape(x)[0]
+        
+        q = self.wq(x)
+        k = self.wk(x)
+        v = self.wv(x)
+        
+        # Reshape for multi-head attention
+        q = tf.reshape(q, (batch_size, -1, self.n_heads, self.d_k))
+        k = tf.reshape(k, (batch_size, -1, self.n_heads, self.d_k))
+        v = tf.reshape(v, (batch_size, -1, self.n_heads, self.d_k))
+        
+        # Transpose for attention computation
+        q = tf.transpose(q, perm=[0, 2, 1, 3])
+        k = tf.transpose(k, perm=[0, 2, 1, 3])
+        v = tf.transpose(v, perm=[0, 2, 1, 3])
+        
+        # Apply attention
+        scaled_attention, attention_weights = self.scaled_dot_product_attention(q, k, v, mask)
+        
+        # Reshape back
+        scaled_attention = tf.transpose(scaled_attention, perm=[0, 2, 1, 3])
+        concat_attention = tf.reshape(scaled_attention, (batch_size, -1, self.d_model))
+        
+        output = self.wo(concat_attention)
+        return output, attention_weights
+
+class TransformerBlock:
+    """Transformer block with attention and feed-forward layers."""
+    
+    def __init__(self, d_model: int, n_heads: int, d_ff: int, dropout_rate: float = 0.1, **kwargs):
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.d_ff = d_ff
+        self.dropout_rate = dropout_rate
+        
+        self.attention = MultiHeadAttention(d_model, n_heads)
+        self.ffn = keras.Sequential([
+            layers.Dense(d_ff, activation='relu'),
+            layers.Dense(d_model)
+        ])
+        
+        self.layernorm1 = layers.LayerNormalization(epsilon=1e-6)
+        self.layernorm2 = layers.LayerNormalization(epsilon=1e-6)
+        
+        self.dropout1 = layers.Dropout(dropout_rate)
+        self.dropout2 = layers.Dropout(dropout_rate)
+    
+    def call(self, x, training=True, mask=None):
+        # Multi-head attention
+        attn_output, _ = self.attention(x, mask)
+        attn_output = self.dropout1(attn_output, training=training)
+        out1 = self.layernorm1(x + attn_output)
+        
+        # Feed-forward network
+        ffn_output = self.ffn(out1)
+        ffn_output = self.dropout2(ffn_output, training=training)
+        out2 = self.layernorm2(out1 + ffn_output)
+        
+        return out2
 
 class SequenceDataPreparator:
-    """Handles sequence data preparation for LSTM models."""
+    """Handles sequence data preparation for Transformer models."""
     
     def __init__(self, sequence_length: int = 60):
         self.sequence_length = sequence_length
@@ -140,81 +267,76 @@ class SequenceDataPreparator:
         """
         return self.create_sequences(data, targets)
 
-class LSTMModel:
+class TransformerModel:
     """
-    LSTM model implementation for sequence prediction.
+    Transformer model implementation for sequence prediction.
     """
     
-    def __init__(self, config: LSTMConfig):
+    def __init__(self, config: TransformerConfig):
         """
-        Initialize LSTM model.
+        Initialize Transformer model.
         
         Args:
-            config: LSTM configuration
+            config: Transformer configuration
         """
         if not TENSORFLOW_AVAILABLE:
-            logger.warning("TensorFlow not available. LSTM model will be limited to configuration and data preparation.")
+            logger.warning("TensorFlow not available. Transformer model will be limited to configuration and data preparation.")
             
         self.config = config
         self.model = None
         self.data_preparator = SequenceDataPreparator(config.sequence_length)
         
-        logger.info("LSTM model initialized",
+        logger.info("Transformer model initialized",
                    sequence_length=config.sequence_length,
                    n_features=config.n_features,
+                   d_model=config.d_model,
+                   n_heads=config.n_heads,
                    task_type=config.task_type.value)
     
     def build_model(self):
         """
-        Build LSTM model architecture.
+        Build Transformer model architecture.
         
         Returns:
             Compiled model
         """
         if not TENSORFLOW_AVAILABLE:
-            raise ImportError("TensorFlow is required to build LSTM model")
+            raise ImportError("TensorFlow is required to build Transformer model")
             
-        model = keras.Sequential()
-        
         # Input layer
-        model.add(layers.Input(shape=(self.config.sequence_length, self.config.n_features)))
+        inputs = layers.Input(shape=(self.config.sequence_length, self.config.n_features))
         
-        # LSTM layers
-        for i, units in enumerate(self.config.lstm_units):
-            return_sequences = (i < len(self.config.lstm_units) - 1) or self.config.return_sequences
-            
-            if self.config.use_bidirectional:
-                lstm_layer = layers.Bidirectional(
-                    layers.LSTM(
-                        units,
-                        return_sequences=return_sequences,
-                        dropout=self.config.dropout_rate,
-                        recurrent_dropout=self.config.recurrent_dropout
-                    )
-                )
-            else:
-                lstm_layer = layers.LSTM(
-                    units,
-                    return_sequences=return_sequences,
-                    dropout=self.config.dropout_rate,
-                    recurrent_dropout=self.config.recurrent_dropout
-                )
-            
-            model.add(lstm_layer)
-            
-            # Add dropout after each LSTM layer (except the last one if return_sequences=False)
-            if return_sequences:
-                model.add(layers.Dropout(self.config.dropout_rate))
+        # Project to d_model dimensions
+        x = layers.Dense(self.config.d_model)(inputs)
+        
+        # Add positional encoding
+        if self.config.use_positional_encoding:
+            x = PositionalEncoding(self.config.d_model, self.config.max_position)(x)
+        
+        # Transformer blocks
+        for _ in range(self.config.n_layers):
+            x = TransformerBlock(
+                self.config.d_model,
+                self.config.n_heads,
+                self.config.d_ff,
+                self.config.dropout_rate
+            )(x)
+        
+        # Global average pooling
+        x = layers.GlobalAveragePooling1D()(x)
         
         # Dense layers
-        model.add(layers.Dense(32, activation='relu'))
-        model.add(layers.Dropout(self.config.dropout_rate))
+        x = layers.Dense(64, activation='relu')(x)
+        x = layers.Dropout(self.config.dropout_rate)(x)
         
         # Output layer
         if self.config.task_type == TaskType.CLASSIFICATION:
-            model.add(layers.Dense(self.config.n_classes, activation='softmax'))
+            outputs = layers.Dense(self.config.n_classes, activation='softmax')(x)
         else:
-            model.add(layers.Dense(1, activation='linear'))
+            outputs = layers.Dense(1, activation='linear')(x)
+        
+        # Create model
+        model = keras.Model(inputs=inputs, outputs=outputs)
         
         # Compile model
         if self.config.task_type == TaskType.CLASSIFICATION:
@@ -232,7 +354,7 @@ class LSTMModel:
         
         self.model = model
         
-        logger.info("LSTM model built successfully",
+        logger.info("Transformer model built successfully",
                    total_params=model.count_params(),
                    task_type=self.config.task_type.value)
         
@@ -256,7 +378,7 @@ class LSTMModel:
     
     def train(self, X: np.ndarray, y: np.ndarray, validation_data: Optional[Tuple] = None) -> TrainingResult:
         """
-        Train the LSTM model.
+        Train the Transformer model.
         
         Args:
             X: Training sequences
@@ -287,7 +409,7 @@ class LSTMModel:
             )
         ]
         
-        logger.info("Starting LSTM training",
+        logger.info("Starting Transformer training",
                    epochs=self.config.epochs,
                    batch_size=self.config.batch_size,
                    validation_split=self.config.validation_split)
@@ -322,7 +444,7 @@ class LSTMModel:
             config=self.config
         )
         
-        logger.info("LSTM training completed",
+        logger.info("Transformer training completed",
                    best_epoch=best_epoch,
                    best_val_loss=best_val_loss,
                    training_time=training_time)
@@ -385,39 +507,51 @@ class LSTMModel:
         logger.info("Model loaded", filepath=filepath)
 
 # Convenience functions
-def create_lstm_model(sequence_length: int = 60,
-                     n_features: int = 1,
-                     task_type: TaskType = TaskType.REGRESSION,
-                     **kwargs) -> LSTMModel:
-    """Create an LSTM model with default configuration."""
-    config = LSTMConfig(
+def create_transformer_model(sequence_length: int = 60,
+                           n_features: int = 1,
+                           d_model: int = 128,
+                           n_heads: int = 8,
+                           task_type: TaskType = TaskType.REGRESSION,
+                           **kwargs) -> TransformerModel:
+    """Create a Transformer model with default configuration."""
+    config = TransformerConfig(
         sequence_length=sequence_length,
         n_features=n_features,
+        d_model=d_model,
+        n_heads=n_heads,
         task_type=task_type,
         **kwargs
     )
-    return LSTMModel(config)
+    return TransformerModel(config)
 
-def create_classification_lstm(sequence_length: int = 60,
-                             n_features: int = 1,
-                             n_classes: int = 2,
-                             **kwargs) -> LSTMModel:
-    """Create an LSTM model for classification tasks."""
-    return create_lstm_model(
+def create_classification_transformer(sequence_length: int = 60,
+                                   n_features: int = 1,
+                                   n_classes: int = 2,
+                                   d_model: int = 128,
+                                   n_heads: int = 8,
+                                   **kwargs) -> TransformerModel:
+    """Create a Transformer model for classification tasks."""
+    return create_transformer_model(
         sequence_length=sequence_length,
         n_features=n_features,
+        d_model=d_model,
+        n_heads=n_heads,
         task_type=TaskType.CLASSIFICATION,
         n_classes=n_classes,
         **kwargs
     )
 
-def create_regression_lstm(sequence_length: int = 60,
-                          n_features: int = 1,
-                          **kwargs) -> LSTMModel:
-    """Create an LSTM model for regression tasks."""
-    return create_lstm_model(
+def create_regression_transformer(sequence_length: int = 60,
+                                n_features: int = 1,
+                                d_model: int = 128,
+                                n_heads: int = 8,
+                                **kwargs) -> TransformerModel:
+    """Create a Transformer model for regression tasks."""
+    return create_transformer_model(
         sequence_length=sequence_length,
         n_features=n_features,
+        d_model=d_model,
+        n_heads=n_heads,
         task_type=TaskType.REGRESSION,
         **kwargs
     )
