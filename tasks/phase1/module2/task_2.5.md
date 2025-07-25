@@ -1,6 +1,6 @@
 # Task 2.5: Implement Williams %R, Keltner Channel, Donchian Channel
 
-## Status: 🔴 Not Started
+## Status: ✅ Completed
 
 ## Details
 - **Priority**: Critical

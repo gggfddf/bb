@@ -1,6 +1,6 @@
 # Task 2.6: Implement SuperTrend, TSI, Ulcer Index
 
-## Status: 🔴 Not Started
+## Status: ✅ Completed
 
 ## Details
 - **Priority**: Critical

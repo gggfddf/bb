@@ -1,6 +1,6 @@
 # Task 2.18: Build Feature Scaling
 
-## Status: 🔴 Not Started
+## Status: ✅ Completed
 
 ## Details
 - **Priority**: High

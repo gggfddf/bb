@@ -1,6 +1,6 @@
 # Task 2.9: Implement TRIX, Detrended Price Oscillator
 
-## Status: 🔴 Not Started
+## Status: ✅ Completed
 
 ## Details
 - **Priority**: Critical

@@ -1,6 +1,6 @@
 # Task 2.13: Implement Hull Moving Average, Weighted Moving Average
 
-## Status: 🔴 Not Started
+## Status: ✅ Completed
 
 ## Details
 - **Priority**: Critical
