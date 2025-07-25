@@ -1,6 +1,6 @@
 # Task 3.15: Create Regime-Specific Models
 
-## Status: 🔴 Not Started
+## Status: ✅ Completed
 
 ## Details
 - **Priority**: Medium
