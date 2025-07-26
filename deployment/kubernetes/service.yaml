@@ -1,0 +1,169 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: trading-system-api
+  namespace: trading-system
+  labels:
+    app: trading-system
+    component: api
+    version: v1.0.0
+  annotations:
+    description: "Trading System API Service"
+    owner: "trading-team"
+spec:
+  type: LoadBalancer
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP
+    - name: https
+      port: 443
+      targetPort: 8443
+      protocol: TCP
+    - name: websocket
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+  selector:
+    app: trading-system
+    component: api
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 3600
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trading-system-database
+  namespace: trading-system
+  labels:
+    app: trading-system
+    component: database
+    version: v1.0.0
+  annotations:
+    description: "Trading System Database Service"
+    owner: "trading-team"
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: 5432
+      protocol: TCP
+  selector:
+    app: trading-system
+    component: database
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trading-system-redis
+  namespace: trading-system
+  labels:
+    app: trading-system
+    component: cache
+    version: v1.0.0
+  annotations:
+    description: "Trading System Redis Cache Service"
+    owner: "trading-team"
+spec:
+  type: ClusterIP
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+      protocol: TCP
+  selector:
+    app: trading-system
+    component: cache
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trading-system-monitoring
+  namespace: trading-system
+  labels:
+    app: trading-system
+    component: monitoring
+    version: v1.0.0
+  annotations:
+    description: "Trading System Monitoring Service"
+    owner: "trading-team"
+spec:
+  type: ClusterIP
+  ports:
+    - name: prometheus
+      port: 9090
+      targetPort: 9090
+      protocol: TCP
+    - name: grafana
+      port: 3000
+      targetPort: 3000
+      protocol: TCP
+    - name: alertmanager
+      port: 9093
+      targetPort: 9093
+      protocol: TCP
+  selector:
+    app: trading-system
+    component: monitoring
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trading-system-logging
+  namespace: trading-system
+  labels:
+    app: trading-system
+    component: logging
+    version: v1.0.0
+  annotations:
+    description: "Trading System Logging Service"
+    owner: "trading-team"
+spec:
+  type: ClusterIP
+  ports:
+    - name: elasticsearch
+      port: 9200
+      targetPort: 9200
+      protocol: TCP
+    - name: kibana
+      port: 5601
+      targetPort: 5601
+      protocol: TCP
+    - name: fluentd
+      port: 24224
+      targetPort: 24224
+      protocol: TCP
+  selector:
+    app: trading-system
+    component: logging
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trading-system-message-queue
+  namespace: trading-system
+  labels:
+    app: trading-system
+    component: message-queue
+    version: v1.0.0
+  annotations:
+    description: "Trading System Message Queue Service"
+    owner: "trading-team"
+spec:
+  type: ClusterIP
+  ports:
+    - name: rabbitmq
+      port: 5672
+      targetPort: 5672
+      protocol: TCP
+    - name: rabbitmq-management
+      port: 15672
+      targetPort: 15672
+      protocol: TCP
+  selector:
+    app: trading-system
+    component: message-queue
