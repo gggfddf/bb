@@ -1,0 +1,148 @@
+version: '3.8'
+
+services:
+  # Trading System
+  trading-system:
+    build:
+      context: ../..
+      dockerfile: deployment/docker/dockerfile
+    container_name: trading-system
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=development
+      - DATABASE_URL=postgresql://trading:password@postgres:5432/trading_db
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=INFO
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ../../logs:/app/logs
+      - ../../data:/app/data
+    networks:
+      - trading-network
+    restart: unless-stopped
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: trading-postgres
+    environment:
+      - POSTGRES_DB=trading_db
+      - POSTGRES_USER=trading
+      - POSTGRES_PASSWORD=password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../../deployment/scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - trading-network
+    restart: unless-stopped
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: trading-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - trading-network
+    restart: unless-stopped
+
+  # Monitoring - Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: trading-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../../deployment/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - trading-network
+    restart: unless-stopped
+
+  # Monitoring - Grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: trading-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ../../deployment/monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ../../deployment/monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+    networks:
+      - trading-network
+    restart: unless-stopped
+
+  # Logging - Elasticsearch
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.8.0
+    container_name: trading-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - trading-network
+    restart: unless-stopped
+
+  # Logging - Kibana
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.8.0
+    container_name: trading-kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+    networks:
+      - trading-network
+    restart: unless-stopped
+
+  # Message Queue - RabbitMQ
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: trading-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=trading
+      - RABBITMQ_DEFAULT_PASS=password
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - trading-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+  elasticsearch_data:
+  rabbitmq_data:
+
+networks:
+  trading-network:
+    driver: bridge
