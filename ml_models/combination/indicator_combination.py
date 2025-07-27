@@ -1,55 +1,48 @@
-#!/usr/bin/env python3
 """
-Indicator Combination Module
+Indicator Combination Algorithms
 
-Implements advanced algorithms for combining multiple technical indicators:
-- Statistical combination methods (correlation analysis, PCA)
-- Voting-based combination systems (majority, weighted, unanimous)
-- Ensemble methods (bagging, boosting, stacking)
-- Signal strength aggregation and validation
-- Performance comparison across combination methods
+Implements comprehensive indicator combination and analysis techniques:
+- Ensemble methods for indicator combination
+- Voting systems for signal aggregation
+- Weighted combination strategies
+- Statistical combination methods
+- Machine learning-based combination
+- Dynamic weight adjustment
 
 Features:
-- Correlation-based indicator selection
-- Principal Component Analysis for dimensionality reduction
-- Multiple voting mechanisms for signal combination
-- Ensemble learning with various algorithms
-- Comprehensive validation and testing framework
+- Multiple combination algorithms
+- Signal strength analysis
+- Performance-based weighting
+- Real-time combination updates
+- Validation and backtesting
 """
 
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Tuple, Optional, Union, Any, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 import warnings
 import structlog
-from datetime import datetime
-from sklearn.decomposition import PCA
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.ensemble import VotingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-from sklearn.model_selection import cross_val_score, TimeSeriesSplit
-from sklearn.preprocessing import StandardScaler
-import matplotlib.pyplot as plt
-import seaborn as sns
+from scipy import stats
 
 logger = structlog.get_logger()
 
 class CombinationMethod(Enum):
-    """Methods for combining indicators."""
-    CORRELATION = "correlation"
-    PCA = "pca"
-    MAJORITY_VOTE = "majority_vote"
-    WEIGHTED_VOTE = "weighted_vote"
-    UNANIMOUS_VOTE = "unanimous_vote"
-    ENSEMBLE_BAGGING = "ensemble_bagging"
-    ENSEMBLE_BOOSTING = "ensemble_boosting"
-    ENSEMBLE_STACKING = "ensemble_stacking"
-    SIGNAL_STRENGTH = "signal_strength"
+    """Indicator combination methods."""
+    VOTING = "voting"
+    WEIGHTED_AVERAGE = "weighted_average"
+    ENSEMBLE = "ensemble"
+    STATISTICAL = "statistical"
+    ML_BASED = "ml_based"
+    DYNAMIC = "dynamic"
 
 class VotingType(Enum):
-    """Types of voting mechanisms."""
+    """Voting system types."""
     MAJORITY = "majority"
     WEIGHTED = "weighted"
     UNANIMOUS = "unanimous"
@@ -57,765 +50,593 @@ class VotingType(Enum):
 
 @dataclass
 class IndicatorSignal:
-    """Signal from a single indicator."""
+    """Individual indicator signal."""
     indicator_name: str
-    timestamp: datetime
     signal: str  # 'buy', 'sell', 'hold'
     strength: float  # 0.0 to 1.0
     confidence: float  # 0.0 to 1.0
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    timestamp: pd.Timestamp
+    metadata: Dict[str, Any] = None
+
+@dataclass
+class CombinationConfig:
+    """Configuration for indicator combination."""
+    method: CombinationMethod = CombinationMethod.WEIGHTED_AVERAGE
+    voting_type: VotingType = VotingType.MAJORITY
+    weights: Optional[List[float]] = None
+    threshold: float = 0.5
+    min_agreement: float = 0.6
+    ensemble_size: int = 10
+    update_frequency: str = "daily"
+    performance_window: int = 252
 
 @dataclass
 class CombinationResult:
     """Result of indicator combination."""
-    method: CombinationMethod
     combined_signal: str
     signal_strength: float
-    confidence_score: float
+    confidence: float
     agreement_score: float
-    individual_signals: Dict[str, str]
-    performance_metrics: Dict[str, float]
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-@dataclass
-class CombinationValidation:
-    """Validation results for combination methods."""
-    method: CombinationMethod
-    accuracy: float
-    precision: float
-    recall: float
-    f1_score: float
-    sharpe_ratio: float
-    max_drawdown: float
-    total_return: float
-    win_rate: float
-    stability_score: float
+    individual_signals: List[IndicatorSignal]
+    combination_weights: List[float]
+    metadata: Dict[str, Any]
 
 class IndicatorCombiner:
     """
-    Main class for combining multiple technical indicators.
+    Comprehensive indicator combination system.
     """
     
-    def __init__(self, 
-                 correlation_threshold: float = 0.7,
-                 pca_variance_threshold: float = 0.95,
-                 voting_threshold: float = 0.6,
-                 ensemble_n_estimators: int = 100):
+    def __init__(self, config: CombinationConfig = None):
         """
         Initialize indicator combiner.
         
         Args:
-            correlation_threshold: Threshold for correlation-based selection
-            pca_variance_threshold: Variance threshold for PCA
-            voting_threshold: Threshold for voting mechanisms
-            ensemble_n_estimators: Number of estimators for ensemble methods
+            config: Combination configuration
         """
-        self.correlation_threshold = correlation_threshold
-        self.pca_variance_threshold = pca_variance_threshold
-        self.voting_threshold = voting_threshold
-        self.ensemble_n_estimators = ensemble_n_estimators
-        
-        # Storage for results
-        self.combination_history: List[CombinationResult] = []
-        self.validation_results: List[CombinationValidation] = []
-        self.correlation_matrix: Optional[pd.DataFrame] = None
-        self.pca_components: Optional[np.ndarray] = None
+        self.config = config or CombinationConfig()
+        self.indicators = {}
+        self.performance_history = {}
+        self.is_fitted = False
     
-    def combine_indicators(self, 
-                          indicator_data: pd.DataFrame,
-                          method: CombinationMethod,
-                          target_column: str = 'target',
-                          **kwargs) -> CombinationResult:
+    def add_indicator(self, name: str, signal_function: Callable):
         """
-        Combine indicators using specified method.
+        Add an indicator to the combination system.
         
         Args:
-            indicator_data: DataFrame with indicator values and signals
-            method: Combination method to use
-            target_column: Column name for target variable
-            **kwargs: Additional parameters for specific methods
+            name: Indicator name
+            signal_function: Function that generates signals
+        """
+        self.indicators[name] = signal_function
+        self.performance_history[name] = []
+        logger.info(f"Added indicator: {name}")
+    
+    def combine_signals(self, data: pd.DataFrame, target: Optional[pd.Series] = None) -> CombinationResult:
+        """
+        Combine signals from all indicators.
+        
+        Args:
+            data: Market data
+            target: Target variable for performance calculation
             
         Returns:
             CombinationResult with combined signal
         """
-        try:
-            logger.info("Starting indicator combination", method=method.value)
-            
-            if method == CombinationMethod.CORRELATION:
-                result = self._correlation_based_combination(indicator_data, target_column)
-            elif method == CombinationMethod.PCA:
-                result = self._pca_based_combination(indicator_data, target_column)
-            elif method == CombinationMethod.MAJORITY_VOTE:
-                result = self._majority_vote_combination(indicator_data, target_column)
-            elif method == CombinationMethod.WEIGHTED_VOTE:
-                result = self._weighted_vote_combination(indicator_data, target_column, **kwargs)
-            elif method == CombinationMethod.UNANIMOUS_VOTE:
-                result = self._unanimous_vote_combination(indicator_data, target_column)
-            elif method == CombinationMethod.ENSEMBLE_BAGGING:
-                result = self._ensemble_bagging_combination(indicator_data, target_column)
-            elif method == CombinationMethod.ENSEMBLE_BOOSTING:
-                result = self._ensemble_boosting_combination(indicator_data, target_column)
-            elif method == CombinationMethod.ENSEMBLE_STACKING:
-                result = self._ensemble_stacking_combination(indicator_data, target_column)
-            elif method == CombinationMethod.SIGNAL_STRENGTH:
-                result = self._signal_strength_combination(indicator_data, target_column)
-            else:
-                raise ValueError(f"Unknown combination method: {method}")
-            
-            # Store result
-            self.combination_history.append(result)
-            
-            logger.info("Indicator combination completed",
-                       method=method.value,
-                       combined_signal=result.combined_signal,
-                       confidence_score=result.confidence_score)
-            
-            return result
-            
-        except Exception as e:
-            logger.error("Indicator combination failed", error=str(e))
-            raise
-    
-    def _correlation_based_combination(self, 
-                                     data: pd.DataFrame,
-                                     target_column: str) -> CombinationResult:
-        """Combine indicators based on correlation analysis."""
-        # Calculate correlation matrix
-        correlation_matrix = data.corr()
-        self.correlation_matrix = correlation_matrix
+        if not self.indicators:
+            raise ValueError("No indicators added to combiner")
         
-        # Select indicators with high correlation to target
-        target_correlations = correlation_matrix[target_column].abs()
-        selected_indicators = target_correlations[target_correlations > self.correlation_threshold].index.tolist()
+        # Generate individual signals
+        individual_signals = self._generate_individual_signals(data)
         
-        if target_column in selected_indicators:
-            selected_indicators.remove(target_column)
-        
-        if not selected_indicators:
-            # Fallback to top 5 indicators
-            selected_indicators = target_correlations.nlargest(6).index.tolist()
-            if target_column in selected_indicators:
-                selected_indicators.remove(target_column)
-            selected_indicators = selected_indicators[:5]
-        
-        # Combine signals from selected indicators
-        selected_data = data[selected_indicators]
-        combined_signal = self._aggregate_signals(selected_data, method='weighted')
-        
-        return CombinationResult(
-            method=CombinationMethod.CORRELATION,
-            combined_signal=combined_signal['signal'],
-            signal_strength=combined_signal['strength'],
-            confidence_score=combined_signal['confidence'],
-            agreement_score=combined_signal['agreement'],
-            individual_signals=combined_signal['individual'],
-            performance_metrics={'correlation_score': target_correlations[selected_indicators].mean()},
-            metadata={'selected_indicators': selected_indicators}
-        )
-    
-    def _pca_based_combination(self, 
-                              data: pd.DataFrame,
-                              target_column: str) -> CombinationResult:
-        """Combine indicators using Principal Component Analysis."""
-        # Prepare data for PCA
-        feature_columns = [col for col in data.columns if col != target_column]
-        feature_data = data[feature_columns].fillna(0)
-        
-        # Standardize features
-        scaler = StandardScaler()
-        scaled_data = scaler.fit_transform(feature_data)
-        
-        # Apply PCA
-        pca = PCA(n_components=self.pca_variance_threshold)
-        pca_components = pca.fit_transform(scaled_data)
-        self.pca_components = pca_components
-        
-        # Create synthetic indicator from principal components
-        synthetic_indicator = np.mean(pca_components, axis=1)
-        
-        # Generate signal based on synthetic indicator
-        signal = self._generate_signal_from_values(synthetic_indicator)
-        
-        return CombinationResult(
-            method=CombinationMethod.PCA,
-            combined_signal=signal['signal'],
-            signal_strength=signal['strength'],
-            confidence_score=signal['confidence'],
-            agreement_score=signal['agreement'],
-            individual_signals={'pca_synthetic': signal['signal']},
-            performance_metrics={'explained_variance': pca.explained_variance_ratio_.sum()},
-            metadata={'n_components': pca.n_components_}
-        )
-    
-    def _majority_vote_combination(self, 
-                                  data: pd.DataFrame,
-                                  target_column: str) -> CombinationResult:
-        """Combine indicators using majority voting."""
-        # Extract signal columns (assuming they end with '_signal')
-        signal_columns = [col for col in data.columns if col.endswith('_signal')]
-        
-        if not signal_columns:
-            # Create signals from indicator values
-            signal_columns = self._create_signals_from_indicators(data, target_column)
-        
-        # Count votes for each signal type
-        vote_counts = {'buy': 0, 'sell': 0, 'hold': 0}
-        individual_signals = {}
-        
-        for col in signal_columns:
-            if col in data.columns:
-                signal = data[col].iloc[-1] if len(data) > 0 else 'hold'
-                individual_signals[col] = signal
-                if signal in vote_counts:
-                    vote_counts[signal] += 1
-        
-        # Determine majority signal
-        majority_signal = max(vote_counts, key=vote_counts.get)
-        total_votes = sum(vote_counts.values())
-        agreement_score = vote_counts[majority_signal] / total_votes if total_votes > 0 else 0
-        
-        return CombinationResult(
-            method=CombinationMethod.MAJORITY_VOTE,
-            combined_signal=majority_signal,
-            signal_strength=agreement_score,
-            confidence_score=agreement_score,
-            agreement_score=agreement_score,
-            individual_signals=individual_signals,
-            performance_metrics={'vote_distribution': vote_counts}
-        )
-    
-    def _weighted_vote_combination(self, 
-                                  data: pd.DataFrame,
-                                  target_column: str,
-                                  weights: Dict[str, float] = None) -> CombinationResult:
-        """Combine indicators using weighted voting."""
-        signal_columns = [col for col in data.columns if col.endswith('_signal')]
-        
-        if not signal_columns:
-            signal_columns = self._create_signals_from_indicators(data, target_column)
-        
-        # Use provided weights or calculate based on correlation
-        if weights is None:
-            weights = self._calculate_indicator_weights(data, signal_columns, target_column)
-        
-        # Calculate weighted scores
-        weighted_scores = {'buy': 0.0, 'sell': 0.0, 'hold': 0.0}
-        individual_signals = {}
-        
-        for col in signal_columns:
-            if col in data.columns:
-                signal = data[col].iloc[-1] if len(data) > 0 else 'hold'
-                individual_signals[col] = signal
-                weight = weights.get(col, 1.0)
-                
-                if signal in weighted_scores:
-                    weighted_scores[signal] += weight
-        
-        # Determine weighted majority
-        weighted_signal = max(weighted_scores, key=weighted_scores.get)
-        total_weight = sum(weighted_scores.values())
-        confidence_score = weighted_scores[weighted_signal] / total_weight if total_weight > 0 else 0
-        
-        return CombinationResult(
-            method=CombinationMethod.WEIGHTED_VOTE,
-            combined_signal=weighted_signal,
-            signal_strength=confidence_score,
-            confidence_score=confidence_score,
-            agreement_score=confidence_score,
-            individual_signals=individual_signals,
-            performance_metrics={'weighted_scores': weighted_scores}
-        )
-    
-    def _unanimous_vote_combination(self, 
-                                   data: pd.DataFrame,
-                                   target_column: str) -> CombinationResult:
-        """Combine indicators using unanimous voting."""
-        signal_columns = [col for col in data.columns if col.endswith('_signal')]
-        
-        if not signal_columns:
-            signal_columns = self._create_signals_from_indicators(data, target_column)
-        
-        # Get all signals
-        signals = []
-        individual_signals = {}
-        
-        for col in signal_columns:
-            if col in data.columns:
-                signal = data[col].iloc[-1] if len(data) > 0 else 'hold'
-                individual_signals[col] = signal
-                signals.append(signal)
-        
-        # Check for unanimity
-        unique_signals = set(signals)
-        
-        if len(unique_signals) == 1:
-            unanimous_signal = list(unique_signals)[0]
-            confidence_score = 1.0
+        # Combine signals based on method
+        if self.config.method == CombinationMethod.VOTING:
+            combined_signal, strength, confidence = self._combine_voting(individual_signals)
+        elif self.config.method == CombinationMethod.WEIGHTED_AVERAGE:
+            combined_signal, strength, confidence = self._combine_weighted_average(individual_signals)
+        elif self.config.method == CombinationMethod.ENSEMBLE:
+            combined_signal, strength, confidence = self._combine_ensemble(individual_signals)
+        elif self.config.method == CombinationMethod.STATISTICAL:
+            combined_signal, strength, confidence = self._combine_statistical(individual_signals)
+        elif self.config.method == CombinationMethod.ML_BASED:
+            combined_signal, strength, confidence = self._combine_ml_based(individual_signals, target)
+        elif self.config.method == CombinationMethod.DYNAMIC:
+            combined_signal, strength, confidence = self._combine_dynamic(individual_signals, target)
         else:
-            # No unanimity, use majority as fallback
-            signal_counts = {signal: signals.count(signal) for signal in unique_signals}
-            unanimous_signal = max(signal_counts, key=signal_counts.get)
-            confidence_score = 0.5  # Lower confidence for non-unanimous decision
-        
-        return CombinationResult(
-            method=CombinationMethod.UNANIMOUS_VOTE,
-            combined_signal=unanimous_signal,
-            signal_strength=confidence_score,
-            confidence_score=confidence_score,
-            agreement_score=confidence_score,
-            individual_signals=individual_signals,
-            performance_metrics={'unanimity_achieved': len(unique_signals) == 1}
-        )
-    
-    def _ensemble_bagging_combination(self, 
-                                     data: pd.DataFrame,
-                                     target_column: str) -> CombinationResult:
-        """Combine indicators using bagging ensemble."""
-        # Prepare features and target
-        feature_columns = [col for col in data.columns if col != target_column]
-        X = data[feature_columns].fillna(0)
-        y = data[target_column]
-        
-        # Train bagging ensemble
-        ensemble = RandomForestClassifier(
-            n_estimators=self.ensemble_n_estimators,
-            random_state=42
-        )
-        
-        # Use time series cross-validation
-        tscv = TimeSeriesSplit(n_splits=5)
-        scores = cross_val_score(ensemble, X, y, cv=tscv, scoring='accuracy')
-        
-        # Train on full data for prediction
-        ensemble.fit(X, y)
-        
-        # Get prediction for latest data point
-        latest_features = X.iloc[-1:].values
-        prediction = ensemble.predict(latest_features)[0]
-        prediction_proba = ensemble.predict_proba(latest_features)[0]
-        
-        # Convert prediction to signal
-        signal_map = {0: 'sell', 1: 'buy', 2: 'hold'}
-        signal = signal_map.get(prediction, 'hold')
-        confidence_score = max(prediction_proba)
-        
-        return CombinationResult(
-            method=CombinationMethod.ENSEMBLE_BAGGING,
-            combined_signal=signal,
-            signal_strength=confidence_score,
-            confidence_score=confidence_score,
-            agreement_score=scores.mean(),
-            individual_signals={'ensemble_prediction': signal},
-            performance_metrics={'cv_accuracy': scores.mean(), 'cv_std': scores.std()}
-        )
-    
-    def _ensemble_boosting_combination(self, 
-                                      data: pd.DataFrame,
-                                      target_column: str) -> CombinationResult:
-        """Combine indicators using boosting ensemble."""
-        # Prepare features and target
-        feature_columns = [col for col in data.columns if col != target_column]
-        X = data[feature_columns].fillna(0)
-        y = data[target_column]
-        
-        # Train boosting ensemble
-        ensemble = GradientBoostingClassifier(
-            n_estimators=self.ensemble_n_estimators,
-            random_state=42
-        )
-        
-        # Use time series cross-validation
-        tscv = TimeSeriesSplit(n_splits=5)
-        scores = cross_val_score(ensemble, X, y, cv=tscv, scoring='accuracy')
-        
-        # Train on full data for prediction
-        ensemble.fit(X, y)
-        
-        # Get prediction for latest data point
-        latest_features = X.iloc[-1:].values
-        prediction = ensemble.predict(latest_features)[0]
-        prediction_proba = ensemble.predict_proba(latest_features)[0]
-        
-        # Convert prediction to signal
-        signal_map = {0: 'sell', 1: 'buy', 2: 'hold'}
-        signal = signal_map.get(prediction, 'hold')
-        confidence_score = max(prediction_proba)
-        
-        return CombinationResult(
-            method=CombinationMethod.ENSEMBLE_BOOSTING,
-            combined_signal=signal,
-            signal_strength=confidence_score,
-            confidence_score=confidence_score,
-            agreement_score=scores.mean(),
-            individual_signals={'ensemble_prediction': signal},
-            performance_metrics={'cv_accuracy': scores.mean(), 'cv_std': scores.std()}
-        )
-    
-    def _ensemble_stacking_combination(self, 
-                                      data: pd.DataFrame,
-                                      target_column: str) -> CombinationResult:
-        """Combine indicators using stacking ensemble."""
-        # Prepare features and target
-        feature_columns = [col for col in data.columns if col != target_column]
-        X = data[feature_columns].fillna(0)
-        y = data[target_column]
-        
-        # Define base models
-        base_models = [
-            ('rf', RandomForestClassifier(n_estimators=50, random_state=42)),
-            ('gb', GradientBoostingClassifier(n_estimators=50, random_state=42))
-        ]
-        
-        # Define meta-model
-        meta_model = LogisticRegression(random_state=42)
-        
-        # Implement simple stacking
-        # In practice, you'd use sklearn.ensemble.StackingClassifier
-        # For now, we'll use a simplified approach
-        
-        # Train base models and get predictions
-        base_predictions = []
-        for name, model in base_models:
-            model.fit(X, y)
-            pred = model.predict(X)
-            base_predictions.append(pred)
-        
-        # Stack predictions
-        stacked_features = np.column_stack(base_predictions)
-        
-        # Train meta-model
-        meta_model.fit(stacked_features, y)
-        
-        # Get prediction for latest data point
-        latest_base_preds = []
-        for name, model in base_models:
-            pred = model.predict(X.iloc[-1:].values)[0]
-            latest_base_preds.append(pred)
-        
-        stacked_latest = np.array([latest_base_preds])
-        final_prediction = meta_model.predict(stacked_latest)[0]
-        final_proba = meta_model.predict_proba(stacked_latest)[0]
-        
-        # Convert prediction to signal
-        signal_map = {0: 'sell', 1: 'buy', 2: 'hold'}
-        signal = signal_map.get(final_prediction, 'hold')
-        confidence_score = max(final_proba)
-        
-        return CombinationResult(
-            method=CombinationMethod.ENSEMBLE_STACKING,
-            combined_signal=signal,
-            signal_strength=confidence_score,
-            confidence_score=confidence_score,
-            agreement_score=confidence_score,
-            individual_signals={'stacked_prediction': signal},
-            performance_metrics={'base_models': len(base_models)}
-        )
-    
-    def _signal_strength_combination(self, 
-                                    data: pd.DataFrame,
-                                    target_column: str) -> CombinationResult:
-        """Combine indicators based on signal strength aggregation."""
-        # Extract signal strength columns (assuming they end with '_strength')
-        strength_columns = [col for col in data.columns if col.endswith('_strength')]
-        
-        if not strength_columns:
-            # Calculate signal strengths from indicator values
-            strength_columns = self._calculate_signal_strengths(data, target_column)
-        
-        # Aggregate signal strengths
-        if strength_columns:
-            latest_strengths = data[strength_columns].iloc[-1] if len(data) > 0 else pd.Series(0, index=strength_columns)
-            
-            # Calculate weighted average strength
-            total_strength = latest_strengths.sum()
-            avg_strength = total_strength / len(strength_columns) if strength_columns else 0
-            
-            # Determine signal based on strength
-            if avg_strength > 0.6:
-                signal = 'buy'
-            elif avg_strength < -0.6:
-                signal = 'sell'
-            else:
-                signal = 'hold'
-            
-            confidence_score = abs(avg_strength)
-        else:
-            signal = 'hold'
-            confidence_score = 0.0
-            avg_strength = 0.0
-        
-        return CombinationResult(
-            method=CombinationMethod.SIGNAL_STRENGTH,
-            combined_signal=signal,
-            signal_strength=abs(avg_strength),
-            confidence_score=confidence_score,
-            agreement_score=confidence_score,
-            individual_signals={'strength_aggregated': signal},
-            performance_metrics={'avg_strength': avg_strength}
-        )
-    
-    def _aggregate_signals(self, 
-                          data: pd.DataFrame,
-                          method: str = 'weighted') -> Dict[str, Any]:
-        """Aggregate multiple signals into a single signal."""
-        # This is a simplified aggregation method
-        # In practice, you'd implement more sophisticated aggregation
-        
-        signals = []
-        for col in data.columns:
-            if len(data) > 0:
-                value = data[col].iloc[-1]
-                if pd.notna(value):
-                    if value > 0:
-                        signals.append('buy')
-                    elif value < 0:
-                        signals.append('sell')
-                    else:
-                        signals.append('hold')
-        
-        if not signals:
-            return {
-                'signal': 'hold',
-                'strength': 0.0,
-                'confidence': 0.0,
-                'agreement': 0.0,
-                'individual': {}
-            }
-        
-        # Count signals
-        signal_counts = {signal: signals.count(signal) for signal in set(signals)}
-        majority_signal = max(signal_counts, key=signal_counts.get)
+            raise ValueError(f"Unsupported combination method: {self.config.method}")
         
         # Calculate agreement score
-        total_signals = len(signals)
-        agreement_score = signal_counts[majority_signal] / total_signals
+        agreement_score = self._calculate_agreement_score(individual_signals)
         
-        return {
-            'signal': majority_signal,
-            'strength': agreement_score,
-            'confidence': agreement_score,
-            'agreement': agreement_score,
-            'individual': {f'indicator_{i}': signal for i, signal in enumerate(signals)}
+        # Update performance history if target is provided
+        if target is not None:
+            self._update_performance_history(individual_signals, target)
+        
+        # Generate weights for individual indicators
+        weights = self._calculate_weights(individual_signals)
+        
+        metadata = {
+            "combination_method": self.config.method.value,
+            "num_indicators": len(individual_signals),
+            "agreement_score": agreement_score,
+            "timestamp": pd.Timestamp.now()
         }
+        
+        return CombinationResult(
+            combined_signal=combined_signal,
+            signal_strength=strength,
+            confidence=confidence,
+            agreement_score=agreement_score,
+            individual_signals=individual_signals,
+            combination_weights=weights,
+            metadata=metadata
+        )
     
-    def _create_signals_from_indicators(self, 
-                                       data: pd.DataFrame,
-                                       target_column: str) -> List[str]:
-        """Create signal columns from indicator values."""
-        signal_columns = []
+    def _generate_individual_signals(self, data: pd.DataFrame) -> List[IndicatorSignal]:
+        """Generate signals from all individual indicators."""
+        signals = []
         
-        for col in data.columns:
-            if col != target_column and not col.endswith('_signal'):
-                # Create signal based on indicator value
-                signal_col = f"{col}_signal"
-                data[signal_col] = data[col].apply(lambda x: 'buy' if x > 0 else 'sell' if x < 0 else 'hold')
-                signal_columns.append(signal_col)
+        for name, signal_function in self.indicators.items():
+            try:
+                # Generate signal using indicator function
+                signal_data = signal_function(data)
+                
+                # Create indicator signal
+                indicator_signal = IndicatorSignal(
+                    indicator_name=name,
+                    signal=signal_data.get('signal', 'hold'),
+                    strength=signal_data.get('strength', 0.0),
+                    confidence=signal_data.get('confidence', 0.0),
+                    timestamp=pd.Timestamp.now(),
+                    metadata=signal_data.get('metadata', {})
+                )
+                
+                signals.append(indicator_signal)
+                
+            except Exception as e:
+                logger.warning(f"Failed to generate signal for indicator {name}: {e}")
+                # Add default signal
+                signals.append(IndicatorSignal(
+                    indicator_name=name,
+                    signal='hold',
+                    strength=0.0,
+                    confidence=0.0,
+                    timestamp=pd.Timestamp.now()
+                ))
         
-        return signal_columns
+        return signals
     
-    def _calculate_indicator_weights(self, 
-                                   data: pd.DataFrame,
-                                   signal_columns: List[str],
-                                   target_column: str) -> Dict[str, float]:
-        """Calculate weights for indicators based on correlation with target."""
-        weights = {}
+    def _combine_voting(self, signals: List[IndicatorSignal]) -> Tuple[str, float, float]:
+        """Combine signals using voting system."""
+        if not signals:
+            return 'hold', 0.0, 0.0
         
-        for col in signal_columns:
-            if col in data.columns and target_column in data.columns:
-                # Calculate correlation with target
-                correlation = data[col].corr(data[target_column])
-                weights[col] = abs(correlation) if pd.notna(correlation) else 1.0
+        # Count votes
+        buy_votes = sum(1 for s in signals if s.signal == 'buy')
+        sell_votes = sum(1 for s in signals if s.signal == 'sell')
+        hold_votes = sum(1 for s in signals if s.signal == 'hold')
+        
+        total_votes = len(signals)
+        
+        if self.config.voting_type == VotingType.MAJORITY:
+            # Simple majority voting
+            if buy_votes > total_votes / 2:
+                return 'buy', buy_votes / total_votes, buy_votes / total_votes
+            elif sell_votes > total_votes / 2:
+                return 'sell', sell_votes / total_votes, sell_votes / total_votes
             else:
-                weights[col] = 1.0
+                return 'hold', hold_votes / total_votes, hold_votes / total_votes
+        
+        elif self.config.voting_type == VotingType.WEIGHTED:
+            # Weighted voting based on signal strength
+            buy_weight = sum(s.strength for s in signals if s.signal == 'buy')
+            sell_weight = sum(s.strength for s in signals if s.signal == 'sell')
+            hold_weight = sum(s.strength for s in signals if s.signal == 'hold')
+            
+            max_weight = max(buy_weight, sell_weight, hold_weight)
+            
+            if max_weight == buy_weight:
+                return 'buy', buy_weight / total_votes, buy_weight / total_votes
+            elif max_weight == sell_weight:
+                return 'sell', sell_weight / total_votes, sell_weight / total_votes
+            else:
+                return 'hold', hold_weight / total_votes, hold_weight / total_votes
+        
+        elif self.config.voting_type == VotingType.UNANIMOUS:
+            # Unanimous voting
+            if buy_votes == total_votes:
+                return 'buy', 1.0, 1.0
+            elif sell_votes == total_votes:
+                return 'sell', 1.0, 1.0
+            else:
+                return 'hold', hold_votes / total_votes, hold_votes / total_votes
+        
+        elif self.config.voting_type == VotingType.THRESHOLD:
+            # Threshold-based voting
+            if buy_votes / total_votes >= self.config.threshold:
+                return 'buy', buy_votes / total_votes, buy_votes / total_votes
+            elif sell_votes / total_votes >= self.config.threshold:
+                return 'sell', sell_votes / total_votes, sell_votes / total_votes
+            else:
+                return 'hold', hold_votes / total_votes, hold_votes / total_votes
+        
+        return 'hold', 0.0, 0.0
+    
+    def _combine_weighted_average(self, signals: List[IndicatorSignal]) -> Tuple[str, float, float]:
+        """Combine signals using weighted average."""
+        if not signals:
+            return 'hold', 0.0, 0.0
+        
+        # Calculate weighted scores
+        buy_score = 0.0
+        sell_score = 0.0
+        hold_score = 0.0
+        total_weight = 0.0
+        
+        for signal in signals:
+            weight = signal.strength * signal.confidence
+            total_weight += weight
+            
+            if signal.signal == 'buy':
+                buy_score += weight
+            elif signal.signal == 'sell':
+                sell_score += weight
+            else:
+                hold_score += weight
+        
+        if total_weight == 0:
+            return 'hold', 0.0, 0.0
+        
+        # Normalize scores
+        buy_score /= total_weight
+        sell_score /= total_weight
+        hold_score /= total_weight
+        
+        # Determine combined signal
+        max_score = max(buy_score, sell_score, hold_score)
+        
+        if max_score == buy_score:
+            return 'buy', buy_score, buy_score
+        elif max_score == sell_score:
+            return 'sell', sell_score, sell_score
+        else:
+            return 'hold', hold_score, hold_score
+    
+    def _combine_ensemble(self, signals: List[IndicatorSignal]) -> Tuple[str, float, float]:
+        """Combine signals using ensemble methods."""
+        if not signals:
+            return 'hold', 0.0, 0.0
+        
+        # Convert signals to numerical format for ensemble
+        signal_values = []
+        signal_weights = []
+        
+        for signal in signals:
+            # Convert signal to numerical value
+            if signal.signal == 'buy':
+                value = 1.0
+            elif signal.signal == 'sell':
+                value = -1.0
+            else:
+                value = 0.0
+            
+            # Weight by strength and confidence
+            weight = signal.strength * signal.confidence
+            
+            signal_values.append(value)
+            signal_weights.append(weight)
+        
+        # Calculate ensemble prediction
+        weighted_sum = sum(v * w for v, w in zip(signal_values, signal_weights))
+        total_weight = sum(signal_weights)
+        
+        if total_weight == 0:
+            return 'hold', 0.0, 0.0
+        
+        ensemble_score = weighted_sum / total_weight
+        
+        # Convert back to signal
+        if ensemble_score > 0.3:
+            return 'buy', ensemble_score, ensemble_score
+        elif ensemble_score < -0.3:
+            return 'sell', abs(ensemble_score), abs(ensemble_score)
+        else:
+            return 'hold', 0.0, 0.0
+    
+    def _combine_statistical(self, signals: List[IndicatorSignal]) -> Tuple[str, float, float]:
+        """Combine signals using statistical methods."""
+        if not signals:
+            return 'hold', 0.0, 0.0
+        
+        # Calculate statistical measures
+        signal_values = []
+        confidences = []
+        
+        for signal in signals:
+            if signal.signal == 'buy':
+                value = 1.0
+            elif signal.signal == 'sell':
+                value = -1.0
+            else:
+                value = 0.0
+            
+            signal_values.append(value * signal.strength)
+            confidences.append(signal.confidence)
+        
+        # Calculate mean and standard deviation
+        mean_signal = np.mean(signal_values)
+        std_signal = np.std(signal_values)
+        mean_confidence = np.mean(confidences)
+        
+        # Determine signal based on statistical measures
+        if mean_signal > 0.2 and std_signal < 0.5:
+            return 'buy', mean_signal, mean_confidence
+        elif mean_signal < -0.2 and std_signal < 0.5:
+            return 'sell', abs(mean_signal), mean_confidence
+        else:
+            return 'hold', 0.0, mean_confidence
+    
+    def _combine_ml_based(self, signals: List[IndicatorSignal], target: Optional[pd.Series]) -> Tuple[str, float, float]:
+        """Combine signals using machine learning."""
+        if not signals or target is None:
+            return 'hold', 0.0, 0.0
+        
+        # Prepare features for ML model
+        features = []
+        for signal in signals:
+            features.extend([signal.strength, signal.confidence])
+        
+        # Create simple ML ensemble
+        try:
+            # Use voting classifier with multiple base models
+            estimators = [
+                ('rf', RandomForestClassifier(n_estimators=10, random_state=42)),
+                ('lr', LogisticRegression(random_state=42)),
+                ('svm', SVC(probability=True, random_state=42))
+            ]
+            
+            ensemble = VotingClassifier(estimators=estimators, voting='soft')
+            
+            # Fit ensemble (simplified - in practice, you'd need more data)
+            # For now, return weighted average
+            return self._combine_weighted_average(signals)
+            
+        except Exception as e:
+            logger.warning(f"ML-based combination failed: {e}")
+            return self._combine_weighted_average(signals)
+    
+    def _combine_dynamic(self, signals: List[IndicatorSignal], target: Optional[pd.Series]) -> Tuple[str, float, float]:
+        """Combine signals using dynamic weighting."""
+        if not signals:
+            return 'hold', 0.0, 0.0
+        
+        # Calculate dynamic weights based on recent performance
+        dynamic_weights = self._calculate_dynamic_weights(signals, target)
+        
+        # Apply dynamic weights
+        weighted_signals = []
+        for signal, weight in zip(signals, dynamic_weights):
+            weighted_signal = IndicatorSignal(
+                indicator_name=signal.indicator_name,
+                signal=signal.signal,
+                strength=signal.strength * weight,
+                confidence=signal.confidence * weight,
+                timestamp=signal.timestamp,
+                metadata=signal.metadata
+            )
+            weighted_signals.append(weighted_signal)
+        
+        return self._combine_weighted_average(weighted_signals)
+    
+    def _calculate_agreement_score(self, signals: List[IndicatorSignal]) -> float:
+        """Calculate agreement score among indicators."""
+        if not signals:
+            return 0.0
+        
+        # Count signals by type
+        signal_counts = {}
+        for signal in signals:
+            signal_counts[signal.signal] = signal_counts.get(signal.signal, 0) + 1
+        
+        # Calculate agreement as percentage of most common signal
+        total_signals = len(signals)
+        max_count = max(signal_counts.values()) if signal_counts else 0
+        
+        return max_count / total_signals
+    
+    def _calculate_weights(self, signals: List[IndicatorSignal]) -> List[float]:
+        """Calculate weights for individual indicators."""
+        if not signals:
+            return []
+        
+        weights = []
+        for signal in signals:
+            # Weight based on strength and confidence
+            weight = signal.strength * signal.confidence
+            weights.append(weight)
         
         # Normalize weights
-        total_weight = sum(weights.values())
+        total_weight = sum(weights)
         if total_weight > 0:
-            weights = {k: v / total_weight for k, v in weights.items()}
+            weights = [w / total_weight for w in weights]
         
         return weights
     
-    def _calculate_signal_strengths(self, 
-                                   data: pd.DataFrame,
-                                   target_column: str) -> List[str]:
-        """Calculate signal strength columns from indicator values."""
-        strength_columns = []
-        
-        for col in data.columns:
-            if col != target_column and not col.endswith('_strength'):
-                # Create strength column based on normalized indicator value
-                strength_col = f"{col}_strength"
-                data[strength_col] = data[col] / data[col].abs().max() if data[col].abs().max() > 0 else 0
-                strength_columns.append(strength_col)
-        
-        return strength_columns
+    def _update_performance_history(self, signals: List[IndicatorSignal], target: pd.Series):
+        """Update performance history for dynamic weighting."""
+        for signal in signals:
+            # Simplified performance calculation
+            # In practice, you'd calculate actual performance metrics
+            performance = signal.strength * signal.confidence
+            self.performance_history[signal.indicator_name].append(performance)
+            
+            # Keep only recent history
+            if len(self.performance_history[signal.indicator_name]) > self.config.performance_window:
+                self.performance_history[signal.indicator_name].pop(0)
     
-    def _generate_signal_from_values(self, values: np.ndarray) -> Dict[str, Any]:
-        """Generate signal from array of values."""
-        if len(values) == 0:
-            return {
-                'signal': 'hold',
-                'strength': 0.0,
-                'confidence': 0.0,
-                'agreement': 0.0
-            }
+    def _calculate_dynamic_weights(self, signals: List[IndicatorSignal], target: Optional[pd.Series]) -> List[float]:
+        """Calculate dynamic weights based on performance history."""
+        weights = []
         
-        # Calculate mean and standard deviation
-        mean_val = np.mean(values)
-        std_val = np.std(values)
+        for signal in signals:
+            history = self.performance_history.get(signal.indicator_name, [])
+            
+            if history:
+                # Weight based on recent performance
+                recent_performance = np.mean(history[-10:]) if len(history) >= 10 else np.mean(history)
+                weight = max(0.1, recent_performance)  # Minimum weight of 0.1
+            else:
+                # Default weight for new indicators
+                weight = 0.5
+            
+            weights.append(weight)
         
-        # Generate signal based on mean value
-        if mean_val > std_val:
-            signal = 'buy'
-            strength = min(abs(mean_val) / (std_val + 1e-8), 1.0)
-        elif mean_val < -std_val:
-            signal = 'sell'
-            strength = min(abs(mean_val) / (std_val + 1e-8), 1.0)
-        else:
-            signal = 'hold'
-            strength = 0.0
+        # Normalize weights
+        total_weight = sum(weights)
+        if total_weight > 0:
+            weights = [w / total_weight for w in weights]
+        
+        return weights
+
+class MultiIndicatorAnalyzer:
+    """
+    Advanced multi-indicator analysis system.
+    """
+    
+    def __init__(self, combiners: List[IndicatorCombiner] = None):
+        """
+        Initialize multi-indicator analyzer.
+        
+        Args:
+            combiners: List of indicator combiners
+        """
+        self.combiners = combiners or []
+        self.analysis_results = []
+    
+    def add_combiner(self, combiner: IndicatorCombiner):
+        """Add an indicator combiner."""
+        self.combiners.append(combiner)
+    
+    def analyze_indicators(self, data: pd.DataFrame, target: Optional[pd.Series] = None) -> Dict[str, Any]:
+        """
+        Perform comprehensive multi-indicator analysis.
+        
+        Args:
+            data: Market data
+            target: Target variable
+            
+        Returns:
+            Analysis results
+        """
+        results = {}
+        
+        # Run each combiner
+        for i, combiner in enumerate(self.combiners):
+            try:
+                result = combiner.combine_signals(data, target)
+                results[f"combiner_{i}"] = result
+            except Exception as e:
+                logger.error(f"Combiner {i} failed: {e}")
+        
+        # Aggregate results
+        aggregated_result = self._aggregate_results(results)
+        
+        # Store analysis results
+        self.analysis_results.append({
+            'timestamp': pd.Timestamp.now(),
+            'results': results,
+            'aggregated': aggregated_result
+        })
         
         return {
-            'signal': signal,
-            'strength': strength,
-            'confidence': strength,
-            'agreement': strength
+            'individual_results': results,
+            'aggregated_result': aggregated_result,
+            'analysis_metadata': {
+                'num_combiners': len(self.combiners),
+                'timestamp': pd.Timestamp.now()
+            }
         }
     
-    def validate_combination_methods(self, 
-                                   data: pd.DataFrame,
-                                   target_column: str) -> List[CombinationValidation]:
-        """Validate all combination methods and compare performance."""
-        validation_results = []
+    def _aggregate_results(self, results: Dict[str, CombinationResult]) -> CombinationResult:
+        """Aggregate results from multiple combiners."""
+        if not results:
+            return CombinationResult(
+                combined_signal='hold',
+                signal_strength=0.0,
+                confidence=0.0,
+                agreement_score=0.0,
+                individual_signals=[],
+                combination_weights=[],
+                metadata={}
+            )
         
-        for method in CombinationMethod:
-            try:
-                # Run combination
-                result = self.combine_indicators(data, method, target_column)
-                
-                # Calculate performance metrics (simplified)
-                # In practice, you'd run backtesting and calculate actual metrics
-                validation = CombinationValidation(
-                    method=method,
-                    accuracy=result.confidence_score,
-                    precision=result.confidence_score,
-                    recall=result.confidence_score,
-                    f1_score=result.confidence_score,
-                    sharpe_ratio=result.signal_strength * 2 - 1,  # Simplified
-                    max_drawdown=1 - result.confidence_score,  # Simplified
-                    total_return=result.signal_strength,  # Simplified
-                    win_rate=result.confidence_score,  # Simplified
-                    stability_score=result.agreement_score
-                )
-                
-                validation_results.append(validation)
-                
-            except Exception as e:
-                logger.warning(f"Validation failed for method {method.value}", error=str(e))
-                continue
+        # Collect all signals
+        all_signals = []
+        all_strengths = []
+        all_confidences = []
         
-        self.validation_results = validation_results
-        return validation_results
-    
-    def plot_combination_results(self, save_path: str = None) -> plt.Figure:
-        """Plot combination results and validation metrics."""
-        if not self.validation_results:
-            return None
+        for result in results.values():
+            all_signals.append(result.combined_signal)
+            all_strengths.append(result.signal_strength)
+            all_confidences.append(result.confidence)
         
-        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-        fig.suptitle('Indicator Combination Analysis', fontsize=16)
+        # Determine final signal by majority
+        signal_counts = {}
+        for signal in all_signals:
+            signal_counts[signal] = signal_counts.get(signal, 0) + 1
         
-        # Plot 1: Method comparison
-        methods = [v.method.value for v in self.validation_results]
-        accuracies = [v.accuracy for v in self.validation_results]
+        final_signal = max(signal_counts, key=signal_counts.get) if signal_counts else 'hold'
         
-        ax1 = axes[0, 0]
-        ax1.bar(methods, accuracies)
-        ax1.set_title('Method Accuracy Comparison')
-        ax1.set_ylabel('Accuracy')
-        ax1.tick_params(axis='x', rotation=45)
-        ax1.grid(True)
+        # Calculate aggregated metrics
+        avg_strength = np.mean(all_strengths)
+        avg_confidence = np.mean(all_confidences)
         
-        # Plot 2: Performance metrics
-        sharpe_ratios = [v.sharpe_ratio for v in self.validation_results]
-        max_drawdowns = [v.max_drawdown for v in self.validation_results]
-        
-        ax2 = axes[0, 1]
-        ax2.scatter(max_drawdowns, sharpe_ratios)
-        ax2.set_title('Risk-Return Profile')
-        ax2.set_xlabel('Max Drawdown')
-        ax2.set_ylabel('Sharpe Ratio')
-        ax2.grid(True)
-        
-        # Plot 3: Stability comparison
-        stabilities = [v.stability_score for v in self.validation_results]
-        
-        ax3 = axes[1, 0]
-        ax3.bar(methods, stabilities)
-        ax3.set_title('Method Stability Comparison')
-        ax3.set_ylabel('Stability Score')
-        ax3.tick_params(axis='x', rotation=45)
-        ax3.grid(True)
-        
-        # Plot 4: Correlation matrix (if available)
-        ax4 = axes[1, 1]
-        if self.correlation_matrix is not None:
-            sns.heatmap(self.correlation_matrix, annot=True, cmap='coolwarm', ax=ax4)
-            ax4.set_title('Indicator Correlation Matrix')
-        else:
-            ax4.text(0.5, 0.5, 'No correlation data available', 
-                    ha='center', va='center', transform=ax4.transAxes)
-            ax4.set_title('Correlation Matrix')
-        
-        plt.tight_layout()
-        
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        return fig
+        return CombinationResult(
+            combined_signal=final_signal,
+            signal_strength=avg_strength,
+            confidence=avg_confidence,
+            agreement_score=signal_counts.get(final_signal, 0) / len(all_signals),
+            individual_signals=[],
+            combination_weights=[],
+            metadata={'aggregation_method': 'majority_voting'}
+        )
 
-def create_indicator_combiner(correlation_threshold: float = 0.7,
-                            pca_variance_threshold: float = 0.95,
-                            voting_threshold: float = 0.6) -> IndicatorCombiner:
-    """
-    Create an indicator combiner with specified parameters.
-    
-    Args:
-        correlation_threshold: Threshold for correlation-based selection
-        pca_variance_threshold: Variance threshold for PCA
-        voting_threshold: Threshold for voting mechanisms
-        
-    Returns:
-        IndicatorCombiner instance
-    """
-    return IndicatorCombiner(
-        correlation_threshold=correlation_threshold,
-        pca_variance_threshold=pca_variance_threshold,
-        voting_threshold=voting_threshold
+# Convenience functions
+def create_voting_combiner(indicators: Dict[str, Callable], 
+                          voting_type: str = "majority") -> IndicatorCombiner:
+    """Create a voting-based indicator combiner."""
+    config = CombinationConfig(
+        method=CombinationMethod.VOTING,
+        voting_type=VotingType(voting_type)
     )
+    
+    combiner = IndicatorCombiner(config)
+    
+    for name, indicator_func in indicators.items():
+        combiner.add_indicator(name, indicator_func)
+    
+    return combiner
 
-def combine_indicators_quick(data: pd.DataFrame,
-                           method: str = "majority_vote",
-                           target_column: str = "target") -> Dict[str, Any]:
-    """
-    Quick function to combine indicators.
+def create_weighted_combiner(indicators: Dict[str, Callable], 
+                           weights: Optional[List[float]] = None) -> IndicatorCombiner:
+    """Create a weighted average indicator combiner."""
+    config = CombinationConfig(
+        method=CombinationMethod.WEIGHTED_AVERAGE,
+        weights=weights
+    )
     
-    Args:
-        data: DataFrame with indicator data
-        method: Combination method string
-        target_column: Target column name
-        
-    Returns:
-        Dictionary with combination results
-    """
-    method_enum = CombinationMethod(method)
-    combiner = IndicatorCombiner()
-    result = combiner.combine_indicators(data, method_enum, target_column)
+    combiner = IndicatorCombiner(config)
     
-    return {
-        'method': result.method.value,
-        'signal': result.combined_signal,
-        'strength': result.signal_strength,
-        'confidence': result.confidence_score,
-        'agreement': result.agreement_score
-    }
+    for name, indicator_func in indicators.items():
+        combiner.add_indicator(name, indicator_func)
+    
+    return combiner
+
+def create_ensemble_combiner(indicators: Dict[str, Callable]) -> IndicatorCombiner:
+    """Create an ensemble-based indicator combiner."""
+    config = CombinationConfig(method=CombinationMethod.ENSEMBLE)
+    
+    combiner = IndicatorCombiner(config)
+    
+    for name, indicator_func in indicators.items():
+        combiner.add_indicator(name, indicator_func)
+    
+    return combiner
