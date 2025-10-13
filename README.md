@@ -39,7 +39,7 @@ The script will:
 
 - **Ticker**: SI=F (Silver Futures)
 - **Interval**: 1 day
-- **Default Period**: 1 year
+- **Default Period**: Maximum available (up to 50 years)
 
 ## Model Features
 

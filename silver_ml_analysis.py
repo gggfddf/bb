@@ -217,8 +217,8 @@ def main():
     # Create instance
     analyzer = SilverMLAnalysis()
     
-    # Download silver data (1 year of daily data)
-    analyzer.download_silver_data(period="1y", interval="1d")
+    # Download silver data (max available daily data, up to 50 years)
+    analyzer.download_silver_data(period="max", interval="1d")
     
     # Train model
     predictions = analyzer.train_model(model_type='random_forest')
