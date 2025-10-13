@@ -1,9 +1,17 @@
-# Silver Price ML Predictor
+# Silver Price ML Predictor - Pattern Learning Edition
 
-A machine learning project that downloads daily silver price data from yfinance and predicts future prices using various ML algorithms.
+A machine learning project that downloads daily silver price data from yfinance and predicts future prices using **pattern-based learning** focused on price movements, time cycles, and market behavior.
 
-## Features
+## 🎯 Features
 
+### Pattern-Based Learning (NEW!)
+- **Price Movement Patterns**: Learns from actual price movements, not indicators
+- **Time Cycle Analysis**: Understands correction time, consolidation time, reversal time
+- **Pattern Recognition**: Detects peaks, troughs, and cycle positions
+- **Momentum Exhaustion**: Identifies overbought/oversold patterns
+- **Movement Relationships**: Analyzes relationships between rallies, corrections, and consolidations
+
+### Traditional Indicators (Original)
 - Downloads 1-day interval silver futures data (SI=F) from Yahoo Finance
 - Creates technical indicators (SMA, EMA, RSI, Volatility, etc.)
 - Trains Random Forest and Linear Regression models
@@ -19,10 +27,18 @@ pip install -r requirements.txt
 
 ## Usage
 
-Run the main script to download data, train the model, and make predictions:
+### Pattern-Based Model (Recommended)
+Run the pattern-learning model that focuses on price movements and time cycles:
 
 ```bash
-python silver_ml_analysis.py
+python3 silver_ml_pattern_analysis.py
+```
+
+### Traditional Indicator Model
+Run the traditional model with technical indicators:
+
+```bash
+python3 silver_ml_analysis.py
 ```
 
 ## Output
@@ -43,7 +59,39 @@ The script will:
 
 ## Model Features
 
-The model uses the following features:
+### Pattern-Based Model (30 Features)
+Learns from pure price action and time patterns:
+
+**Price Patterns:**
+- Price change percentage and movement direction
+- Peak and trough detection
+- Drawdown from high and rise from low
+
+**Correction Patterns:**
+- In correction flag and duration
+- Correction time tracking
+
+**Consolidation Patterns:**
+- Range ratio and consolidation detection
+- Consolidation duration tracking
+
+**Reversal Patterns:**
+- Trend direction and reversal detection
+- Days since last reversal
+
+**Momentum Patterns:**
+- 5-day, 10-day, 20-day momentum
+- Overbought/oversold detection
+- Price-momentum divergence
+
+**Time Cycles:**
+- Day of week, month patterns
+- Cycle position (days since peak)
+- Consecutive up/down days
+- Rally vs decline ratio
+
+### Traditional Model (15 Features)
+Uses classic technical indicators:
 - Open, High, Low, Close prices
 - Volume and volume changes
 - Simple Moving Averages (5-day, 20-day)
