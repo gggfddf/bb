@@ -407,6 +407,9 @@ class PatternDiscovery:
             
             summaries.append(summary)
         
+        if len(summaries) == 0:
+            return pd.DataFrame()
+        
         return pd.DataFrame(summaries).sort_values('sharpe_ratio', ascending=False)
 
 

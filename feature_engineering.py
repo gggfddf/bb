@@ -383,9 +383,19 @@ class FeatureEngineer:
         # Base columns to exclude
         base_cols = {'Open', 'High', 'Low', 'Close', 'Volume', 'Date', 
                      'return', 'log_return', 'is_outlier', 'outlier_zscore', 
-                     'outlier_return', 'gap', 'large_gap'}
+                     'outlier_return', 'gap', 'large_gap', 'market_regime',
+                     'Dividends', 'Stock Splits', 'Capital Gains'}
         
-        # Get all columns that are features
-        feature_cols = [col for col in df.columns if col not in base_cols]
+        # Get all columns that are features (exclude non-numeric and label columns)
+        feature_cols = []
+        for col in df.columns:
+            if col not in base_cols and not col.startswith('label_') and not col.startswith('in_') and \
+               not col.startswith('consolidation_') and not col.startswith('false_') and \
+               not col.startswith('trend_') and not col.startswith('bull_') and \
+               not col.startswith('bear_') and not col.startswith('sideways_') and \
+               not col.startswith('momentum_burst') and not col.startswith('v_reversal'):
+                # Only include numeric columns
+                if df[col].dtype in ['int64', 'float64', 'int32', 'float32']:
+                    feature_cols.append(col)
         
         return feature_cols

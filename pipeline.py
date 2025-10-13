@@ -14,7 +14,11 @@ from config import SystemConfig, DEFAULT_CONFIG
 from data_preprocessing import DataPreprocessor, create_date_features
 from feature_engineering import FeatureEngineer
 from label_generation import LabelGenerator
-from models import BaselineTreeModel, SequenceModel, evaluate_predictions
+from models import BaselineTreeModel, evaluate_predictions
+try:
+    from models import SequenceModel
+except ImportError:
+    SequenceModel = None
 from pattern_discovery import PatternDiscovery, ShapeBasedMatcher
 from cycle_detection import CycleDetector, RegimeAnalyzer
 from explainability import ModelExplainer, PatternLibraryExplainer, create_prediction_report
@@ -412,8 +416,21 @@ class StockPatternPipeline:
         
         # Save cycle info
         cycle_path = save_path / 'cycle_info.json'
+        # Convert numpy arrays to lists for JSON serialization
+        cycle_info_serializable = {}
+        for key, value in self.cycle_info.items():
+            if isinstance(value, dict):
+                cycle_info_serializable[key] = {}
+                for k, v in value.items():
+                    if isinstance(v, np.ndarray):
+                        cycle_info_serializable[key][k] = v.tolist()
+                    else:
+                        cycle_info_serializable[key][k] = v
+            else:
+                cycle_info_serializable[key] = value
+        
         with open(cycle_path, 'w') as f:
-            json.dump(self.cycle_info, f, indent=2)
+            json.dump(cycle_info_serializable, f, indent=2)
         
         print(f"\nPipeline saved to {save_dir}")
     
