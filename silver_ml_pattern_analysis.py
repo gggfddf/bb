@@ -23,15 +23,31 @@ class SilverPatternMLAnalysis:
         
     def download_silver_data(self, period="max", interval="1d"):
         """Download silver data from yfinance"""
+        from datetime import datetime
+        
         print(f"Downloading silver data with {interval} interval for period: {period}...")
+        print(f"Current system time: {datetime.now()}")
         
         silver = yf.Ticker("SI=F")
         self.data = silver.history(period=period, interval=interval)
         
-        print(f"Downloaded {len(self.data)} records")
-        print(f"\nData range: {self.data.index[0]} to {self.data.index[-1]}")
-        print(f"\nFirst few rows:")
-        print(self.data.head())
+        # Try to get the most recent intraday data to append
+        try:
+            intraday_data = silver.history(period='1d', interval='1m')
+            if len(intraday_data) > 0:
+                latest_intraday_price = intraday_data['Close'].iloc[-1]
+                latest_intraday_time = intraday_data.index[-1]
+                print(f"\nMost recent intraday data:")
+                print(f"  Time: {latest_intraday_time}")
+                print(f"  Price: ${latest_intraday_price:.2f}")
+        except:
+            pass
+        
+        print(f"\nDownloaded {len(self.data)} daily records")
+        print(f"Data range: {self.data.index[0]} to {self.data.index[-1]}")
+        print(f"Latest daily close: ${self.data['Close'].iloc[-1]:.2f}")
+        print(f"\nLast 3 days:")
+        print(self.data[['Close']].tail(3))
         
         return self.data
     
@@ -430,9 +446,17 @@ class SilverPatternMLAnalysis:
         consecutive_down = latest_features['Consecutive_Down_Days'].values[0]
         momentum_10d = latest_features['Momentum_10d'].values[0]
         
+        # Get the latest data timestamp
+        from datetime import datetime
+        X_all, _ = self.prepare_pattern_features()
+        data_timestamp = self.data.index[-1]
+        
         print("\n" + "="*60)
         print("PATTERN-BASED NEXT DAY PREDICTION & ANALYSIS")
         print("="*60)
+        
+        print(f"\n⏰ DATA AS OF: {data_timestamp}")
+        print(f"   (Current time: {datetime.now()})")
         
         print(f"\n📊 CURRENT PRICE: ${current_price:.2f}")
         print(f"🎯 PREDICTED NEXT DAY PRICE: ${prediction:.2f}")
