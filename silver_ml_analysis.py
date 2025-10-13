@@ -69,6 +69,9 @@ class SilverMLAnalysis:
         # Target: Next day's closing price
         df['Target'] = df['Close'].shift(-1)
         
+        # Replace infinities with NaN
+        df = df.replace([np.inf, -np.inf], np.nan)
+        
         # Drop NaN values
         df = df.dropna()
         
